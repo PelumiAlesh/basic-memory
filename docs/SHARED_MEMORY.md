@@ -100,6 +100,14 @@ Includes `brief_profile_note` (default `me/profile`), `brief_state_note`
 (14), question and unreviewed counts, and notes from the last seven days.
 `brief_token_budget` defaults to 1500. Later sections are dropped first.
 
+Clients with hooks get it without asking. The session-start hook (Claude
+Code, Codex, Cursor) appends the same briefing for the pinned project as a
+second fenced block after the existing session brief, inside the hook's
+10,000-character budget. `briefTokenBudget` in the harness settings file or
+`brief_token_budget` sets the size; `hook_project_brief=false` or
+`"projectBrief": false` turns it off. Clients without hooks (ChatGPT, Grok)
+read `memory://_brief/<project>`; the MCP server instructions tell them to.
+
 ## 4. Review inbox
 
 Off unless `review_inbox_enabled=true`.
@@ -173,19 +181,28 @@ The CLI is not an MCP client and is not filtered.
 
 ## 8. Git
 
-`git_autocommit` defaults to false. When true, an MCP write or edit commits
-that note file in the project repository after
-`git_autocommit_debounce_seconds` (default 2). The message is
-`memory(<client>): update <note>`.
+`git_autocommit` defaults to false. When true:
 
-`bm history <note>` is `git log` for that path. `bm undo` reverts the last
-commit whose subject matches `memory(...):` and refuses any other HEAD or a
-dirty tree. The root commit of a repository cannot be reverted; seed the
-repo with one commit first.
+1. Before an overwrite, edit, move, or delete, the current file (or
+   directory) is committed as `memory(<client>): snapshot <note> before
+   <operation>`. This runs synchronously, so the previous content is in
+   history before the API touches it (upstream #1156). A file that is
+   already committed and clean needs no snapshot.
+2. After the write, the changed paths are committed as
+   `memory(<client>): update <note>`, debounced by
+   `git_autocommit_debounce_seconds` (default 2). A move stages both paths.
 
-`git_auto_push` defaults to false. A push runs only when it is true and
-`git remote` prints a name. Credentials in git errors are stripped before
-logging.
+`bm history <note>` is `git log` for that path. `bm undo` handles two
+states. If HEAD is an `update` commit and the tree is clean, it is reverted.
+If HEAD is a `snapshot` and the only uncommitted changes are to the files
+in that snapshot, those files are restored from HEAD, so an overwrite is
+undoable even before its own commit lands. Anything else is refused. The
+root commit of a repository cannot be reverted; seed the repo first.
+
+`git_auto_push` defaults to false and stays that way unless you set it.
+Snapshots are never pushed. A push runs only after an `update` commit or an
+undo, only when `git_auto_push` is true, and only when `git remote` prints a
+name. Credentials in git errors are stripped before logging.
 
 ## 9. Cursor hooks
 
@@ -212,7 +229,23 @@ Cursor cloud agents do not run user hooks, and they do not fire
 if a cloud agent should run them. `beforeSubmitPrompt` is not installed;
 capture is the session-start envelope.
 
-## 10. Notion import
+## 10. Claude Code transcripts
+
+```bash
+bm import claude transcripts                       # ~/.claude/projects
+bm import claude transcripts ~/.claude/projects/-Users-me-vault --since-days 14
+```
+
+Claude Code prunes its JSONL sessions after about thirty days (upstream
+#1527). Each session becomes one `type: conversation` note under
+`conversations/claude-code/` with `claude_session_id`, `cwd`, `git_branch`,
+`started`, and `ended` in frontmatter. Only human input and assistant prose
+are kept; tool calls, tool results, meta frames, and subagent sidechains are
+dropped. A re-run skips notes that already exist unless
+`--include-existing` is passed. Run it from a cron or a `sessionEnd` hook to
+keep the vault ahead of the prune.
+
+## 11. Notion import (lowest priority)
 
 ```bash
 bm import notion ~/Downloads/Export.zip
