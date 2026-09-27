@@ -22,8 +22,10 @@ from basic_memory.shared_memory.git_sync import (
     schedule_autocommit,
     snapshot_before_write,
 )
+from basic_memory.shared_memory.client_registry import client_registry
 from basic_memory.shared_memory.provenance import stamp_provenance
 from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.file_utils import (
     dump_frontmatter,
     has_frontmatter,
@@ -774,7 +776,8 @@ async def edit_note(
                             directory=directory,
                             operation=operation,
                         )
-                        result = await knowledge_client.create_entity(entity.model_dump())
+                        async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                            result = await knowledge_client.create_entity(entity.model_dump())
                         file_created = True
                     else:
                         # find_replace/replace_section require existing content — re-raise
@@ -823,11 +826,17 @@ async def edit_note(
                             logger.warning(f"git snapshot skipped: {exc}")
 
                     # Call the PATCH endpoint
-                    result = await knowledge_client.patch_entity(entity_id, edit_data)
+                    async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                        result = await knowledge_client.patch_entity(entity_id, edit_data)
 
                 # --- Format response ---
                 # result is always set: either by create_entity (auto-create) or patch_entity (edit)
                 assert result is not None
+                client_registry().record_write(
+                    current_client_slug(),
+                    title=result.title,
+                    permalink=result.permalink,
+                )
                 if file_created:
                     summary = [
                         f"# Created note ({operation})",

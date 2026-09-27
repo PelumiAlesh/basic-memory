@@ -118,29 +118,73 @@ def mcp(
     # Lifespan handles: initialization, migrations, file indexing, cleanup
     logger.info(f"Starting MCP server with {transport.upper()} transport")
 
-    if transport == "stdio":
-        mcp_server.run(
-            transport=transport,
-        )
-    elif transport == "streamable-http" or transport == "sse":
-        # Imported here so stdio startup does not register the HTTP route, and
-        # so the bearer gate exists before the transport accepts a connection.
-        from basic_memory.mcp.http_auth import http_middleware, warn_if_http_exposed
-        from basic_memory.shared_memory.http_security import (
-            host_origin_settings,
-            resolve_bind_host,
+    app_config = ConfigManager().config
+    shared_lock = None
+    # Trigger: mcp_shared_server is on (multi-client one-process mode).
+    # Why: two MCP processes against one vault race SQLite and file writes.
+    # Outcome: HTTP claims the pidfile; stdio refuses if a living claim exists.
+    if app_config.mcp_shared_server:
+        from basic_memory.shared_memory.process_guard import (
+            SharedServerConflict,
+            acquire_shared_claim,
+            refuse_if_shared_server_running,
+            release_shared_claim,
         )
 
-        app_config = ConfigManager().config
-        bind_host = resolve_bind_host(host, app_config.mcp_http_host)
-        warn_if_http_exposed(bind_host)
-        logger.info(f"MCP HTTP transport bound to {bind_host}:{port}")
-        mcp_server.run(
-            transport=transport,
-            host=bind_host,
-            port=port,
-            path=path,
-            log_level="INFO",
-            middleware=http_middleware(),
-            **host_origin_settings(app_config),
-        )
+        try:
+            if transport == "stdio":
+                refuse_if_shared_server_running(transport=transport)
+                typer.echo(
+                    "mcp_shared_server is enabled but no shared HTTP server is running. "
+                    "Start one with: basic-memory mcp --transport streamable-http",
+                    err=True,
+                )
+                raise typer.Exit(1)
+            from basic_memory.shared_memory.http_security import resolve_bind_host as _resolve
+
+            bind_for_claim = _resolve(host, app_config.mcp_http_host)
+            shared_lock = acquire_shared_claim(
+                transport=transport,
+                host=bind_for_claim,
+                port=port,
+                path=path,
+            )
+            logger.info(
+                f"Shared MCP server claimed (pid {__import__('os').getpid()}) "
+                f"at {bind_for_claim}:{port}{path}"
+            )
+        except SharedServerConflict as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1)
+
+    try:
+        if transport == "stdio":
+            mcp_server.run(
+                transport=transport,
+            )
+        elif transport == "streamable-http" or transport == "sse":
+            # Imported here so stdio startup does not register the HTTP route, and
+            # so the bearer gate exists before the transport accepts a connection.
+            from basic_memory.mcp.http_auth import http_middleware, warn_if_http_exposed
+            from basic_memory.shared_memory.http_security import (
+                host_origin_settings,
+                resolve_bind_host,
+            )
+
+            bind_host = resolve_bind_host(host, app_config.mcp_http_host)
+            warn_if_http_exposed(bind_host)
+            logger.info(f"MCP HTTP transport bound to {bind_host}:{port}")
+            mcp_server.run(
+                transport=transport,
+                host=bind_host,
+                port=port,
+                path=path,
+                log_level="INFO",
+                middleware=http_middleware(),
+                **host_origin_settings(app_config),
+            )
+    finally:
+        if shared_lock is not None:
+            from basic_memory.shared_memory.process_guard import release_shared_claim
+
+            release_shared_claim(shared_lock)

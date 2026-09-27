@@ -38,11 +38,17 @@ def current_client_slug() -> str | None:
 async def remember_mcp_client(context: Context | None) -> str | None:
     """Record clientInfo for this task unless a bearer token already named the client."""
     if _token_client.get() is not None:
-        return _token_client.get()
-    info = client_info_from_context(context) if context is not None else None
-    if info is None and context is not None:
-        state = await context.get_state(MCP_CLIENT_INFO_STATE_KEY)
-        info = state if isinstance(state, dict) else None
-    slug = slug_from_client_info(info)
-    _info_client.set(slug)
-    return current_client_slug()
+        slug = _token_client.get()
+    else:
+        info = client_info_from_context(context) if context is not None else None
+        if info is None and context is not None:
+            state = await context.get_state(MCP_CLIENT_INFO_STATE_KEY)
+            info = state if isinstance(state, dict) else None
+        slug = slug_from_client_info(info)
+        _info_client.set(slug)
+        slug = current_client_slug()
+    # Shared-server status surfaces which clients are active. Never tokens.
+    from basic_memory.shared_memory.client_registry import client_registry
+
+    client_registry().touch(slug)
+    return slug
