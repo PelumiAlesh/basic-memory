@@ -808,6 +808,15 @@ class BasicMemoryConfig(BaseSettings):
         gt=0,
     )
 
+    hook_project_brief: bool = Field(
+        default=True,
+        description=(
+            "Include the get_brief project briefing in the session-start hook output "
+            "(Claude Code, Codex, Cursor) for the pinned project, inside the hook's "
+            "size budget. Env: BASIC_MEMORY_HOOK_PROJECT_BRIEF"
+        ),
+    )
+
     review_inbox_enabled: bool = Field(
         default=False,
         description=(
