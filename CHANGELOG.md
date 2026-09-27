@@ -4,6 +4,48 @@
 
 ### Features
 
+- Shared MCP server mode (`mcp_shared_server`, default false). One long-running
+  HTTP process is the supported path for several local clients against one
+  vault. The process claims a pidfile under the config dir, serializes
+  canonical note writes in-process (SQLite WAL still serves concurrent reads),
+  and refuses a second MCP process with a clear message. `list_clients` and
+  `bm status --shared` show client slugs and last writes; tokens are never
+  logged. Single-client stdio is unchanged until the flag is on.
+
+- End-of-session capture (`session_capture_enabled`, default false). Cursor
+  `stop` and Claude Code `Stop`/`SessionEnd` write a short private,
+  unreviewed session summary into the review inbox, idempotent per session
+  id. Codex `stop` stays a continue no-op. Does not copy private note bodies.
+
+- Write verification. After `write_note`, `edit_note`, `move_note`, and
+  `delete_note`, the tool reads the note back from the index and, for a local
+  project, from disk after draining pending materialization. The response
+  ends with a `## Verification` section (`verification` in JSON) whose status
+  is `verified`, `pending`, or `failed`, and a failed verdict names the reason:
+  content missing, truncated, duplicated, mismatched, file missing, or file
+  differing from the accepted note. A failed verdict sets
+  `error: WRITE_VERIFICATION_FAILED` in JSON and `moved`/`deleted` to false.
+  `verify_writes` (default `true`) turns it off. Addresses the false "saved"
+  reports in upstream #1341, #1531, #1479, and #1585.
+
+- Git autocommit now commits before a destructive write. When `git_autocommit`
+  is on, an overwrite, edit, move, or delete first commits the current file
+  (or directory) as `memory(<client>): snapshot <note> before <operation>`, so
+  the previous content is in history before the API changes it (upstream
+  #1156). Snapshots are never pushed. `bm undo` also restores files from a
+  snapshot HEAD when the only uncommitted changes are to those files, so an
+  overwrite is undoable before its own commit lands. Moves and deletes are
+  committed after the write as well. `git_auto_push` stays off by default.
+
+- `bm import claude transcripts [path]` imports Claude Code session transcripts
+  (the JSONL files under `~/.claude/projects`, which Claude Code prunes after
+  about thirty days; upstream #1527). Each session becomes one
+  `type: conversation` note under `conversations/claude-code/` with the
+  session id, cwd, branch, start and end times in frontmatter. Human and
+  assistant prose are kept; tool calls, tool results, meta frames, and
+  subagent sidechains are dropped. Re-runs skip notes that already exist
+  (`--include-existing` rewrites them); `--since-days N` limits the scan.
+
 - `bm import notion <zip-or-folder>` imports a Notion Markdown & CSV export
   under `imports/notion/` (override with `--destination`). Notion's
   32-character id suffixes are stripped from file and folder names, relative
@@ -77,6 +119,12 @@
   `brief_decision_days` (default 14), open-question and unreviewed counts, and
   notes updated in the last seven days. The default budget is
   `brief_token_budget` (1500). Later sections are dropped first.
+
+- MCP HTTP and SSE transports check Host and Origin on every request
+  (FastMCP's guard in strict mode). The Host must be loopback, the bound
+  address, or a name in `mcp_http_allowed_hosts` (421 otherwise); a browser
+  Origin must be same-origin, loopback, or in `mcp_http_allowed_origins`
+  (403 otherwise). A tunnel hostname belongs in `mcp_http_allowed_hosts`.
 
 - MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
   or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or

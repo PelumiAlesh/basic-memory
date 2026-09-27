@@ -7,10 +7,11 @@ checkpoint prompting, lifecycle-event capture into the inbox WAL, and the
 flush/status operator surface.
 
 Contracts:
-  - Active harness verbs (session-start, pre-compact) are fail-open: any error logs
-    to stderr and exits 0 — a hook must never disrupt an agent session.
-  - The retired stop verb remains a JSON no-op for upgraded installs whose
-    existing Codex configuration has not been reinstalled yet.
+  - Active harness verbs (session-start, pre-compact, stop) are fail-open: any
+    error logs to stderr and exits 0 — a hook must never disrupt an agent session.
+  - Codex ``stop`` stays a JSON ``{"continue":true}`` no-op so upgraded installs
+    whose Codex Stop hook was never removed keep working. Cursor and Claude
+    ``stop`` write a private review-inbox summary when ``session_capture_enabled``.
   - Codex checkpoint prompting defaults on. An explicit JSON boolean ``false``
     disables it; malformed values and malformed config fail closed.
   - Lifecycle-event capture defaults on for both harnesses. An explicit JSON
@@ -63,6 +64,7 @@ from basic_memory.hooks.adapters import NormalizedHookEvent, for_harness
 # envelope module itself is imported lazily to keep CLI import time lean.
 SESSION_STARTED = "session_started"
 COMPACTION_IMMINENT = "compaction_imminent"
+SESSION_ENDED = "session_ended"
 
 hook_app = typer.Typer(help="Harness lifecycle hook front door (SPEC-55).")
 app.add_typer(hook_app, name="hook", help="Harness lifecycle hook front door")
@@ -1497,11 +1499,112 @@ def pre_compact(
     _run_fail_open("pre-compact", lambda: _pre_compact(harness, project_dir))
 
 
+def _session_already_captured(project_ref: str, session_key: str) -> bool:
+    """True when a prior stop already wrote this session's inbox note."""
+    result = run_with_cleanup(
+        _query(
+            project_ref,
+            query=session_key,
+            metadata_filters={"session_capture_key": session_key},
+            page_size=1,
+            include_inactive=True,
+        )
+    )
+    return bool(result and _rows(result))
+
+
+def _session_end(harness: Harness, project_dir: Optional[Path]) -> None:
+    """Write a short private session summary into the review inbox when enabled.
+
+    Trigger: ``session_capture_enabled`` and a Cursor/Claude stop (or Claude
+    SessionEnd mapped to this verb). Why: pair with the auto-loaded brief so a
+    session leaves a reviewable trace without becoming durable memory.
+    Outcome: one unreviewed, visibility-private note per session id; Codex
+    never reaches this path.
+    """
+    from basic_memory.config import ConfigManager
+    from basic_memory.shared_memory.session_capture import draft_session_capture
+
+    config = ConfigManager().config
+    if not config.session_capture_enabled:
+        return
+
+    profile = PROFILES[harness]
+    payload = _read_stdin_payload()
+    event = for_harness(harness.value).normalize(SESSION_ENDED, payload)
+    mapping_dir = _mapping_dir(project_dir, event.cwd)
+    cfg, _ = load_harness_settings(harness, mapping_dir)
+    capture_folder = str(cfg.get("captureFolder") or profile.default_capture_folder).strip()
+    _capture_envelope(event, SESSION_ENDED, cfg, mapping_dir, capture_folder)
+
+    primary = str(cfg.get("primaryProject") or "").strip()
+    if not primary:
+        return
+
+    status = payload.get("status")
+    status_text = str(status) if isinstance(status, str) and status.strip() else None
+    turns = _transcript_turns(event.transcript_path, harness)
+    draft = draft_session_capture(
+        source=event.source,
+        session_id=event.session_id,
+        project=primary,
+        turns=turns,
+        status=status_text,
+        capture_folder=capture_folder,
+        session_id_key=profile.session_id_key,
+        note_type=profile.session_note_type,
+        client_tag=event.source,
+        review_inbox_mode=config.review_inbox_mode if config.review_inbox_enabled else "status",
+        review_inbox_folder=config.review_inbox_folder,
+    )
+    if draft is None:
+        return
+    if _session_already_captured(primary, draft.session_key):
+        return
+
+    from basic_memory.hooks.project_ref import split_project_ref
+    from basic_memory.mcp.tools import write_note
+
+    project, project_id = split_project_ref(primary)
+    # Force review-inbox semantics even when the global inbox flag is off:
+    # session captures are always unreviewed + private by construction.
+    metadata = dict(draft.metadata)
+    result = run_with_cleanup(
+        write_note(
+            title=draft.title,
+            content=draft.content,
+            directory=draft.directory,
+            project=project,
+            project_id=project_id,
+            tags=list(draft.tags),
+            note_type=draft.note_type,
+            metadata=metadata,
+            overwrite=False,
+            output_format="json",
+        )
+    )
+    if isinstance(result, dict) and result.get("error"):
+        print(f"bm hook stop: session capture failed: {result['error']}", file=sys.stderr)
+
+
 @hook_app.command("stop")
-def stop(harness: Harness = HARNESS_OPTION) -> None:
-    """Allow stale pre-upgrade Stop hooks to finish without blocking Codex."""
-    del harness
-    print('{"continue":true}')
+def stop(
+    harness: Harness = HARNESS_OPTION,
+    project_dir: Optional[Path] = PROJECT_DIR_OPTION,
+) -> None:
+    """Session end: optional inbox capture (Cursor/Claude); Codex continue no-op."""
+    # Trigger: Codex still has a retired Stop hook in some upgraded installs.
+    # Why: that hook must not block the session. Outcome: continue JSON only.
+    if harness is Harness.codex:
+        print('{"continue":true}')
+        return
+    if harness is Harness.cursor:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            _run_fail_open("stop", lambda: _session_end(harness, project_dir))
+        # Cursor stop accepts empty stdout; keep any stray prints out of the protocol.
+        return
+    _run_fail_open("stop", lambda: _session_end(harness, project_dir))
 
 
 @hook_app.command("flush")
@@ -1631,9 +1734,13 @@ def _owned_hook_groups(harness: Harness) -> dict[str, dict[str, Any]]:
     if harness is Harness.cursor:
         raise ValueError("Cursor hooks use a flat hooks.json; see _install_cursor_hooks.")
     if harness is Harness.claude:
+        # Stop and SessionEnd both map to ``bm hook stop``; capture is
+        # idempotent per session id, so firing both is safe.
         return {
             "SessionStart": group("session-start", 20, None),
             "PreCompact": group("pre-compact", 120, None),
+            "Stop": group("stop", 30, None),
+            "SessionEnd": group("stop", 30, None),
         }
     if harness is Harness.codex:
         return {
@@ -1731,7 +1838,7 @@ def _uv_install_hint() -> str:
 
 
 def _cursor_hook_commands() -> dict[str, list[dict[str, Any]]]:
-    """Flat Cursor hook entries. sessionStart briefs; preCompact captures."""
+    """Flat Cursor hook entries. sessionStart briefs; stop captures when enabled."""
     launcher = _hook_launcher()
 
     def entry(verb: str, timeout: int) -> dict[str, Any]:
@@ -1740,6 +1847,7 @@ def _cursor_hook_commands() -> dict[str, list[dict[str, Any]]]:
     return {
         "sessionStart": [entry("session-start", 20)],
         "preCompact": [entry("pre-compact", 120)],
+        "stop": [entry("stop", 30)],
     }
 
 
