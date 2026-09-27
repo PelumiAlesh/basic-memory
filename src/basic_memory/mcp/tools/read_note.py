@@ -178,6 +178,9 @@ async def read_note(
     # Why: both flow into the fallback search's server-side slicing, where
     #      non-positive values produce empty result pages with unreachable
     #      pagination. Fail fast, matching search_notes/build_context.
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
     if page < 1:
         raise ValueError(f"page must be >= 1, got {page}")
     if page_size < 1:
@@ -279,6 +282,21 @@ async def read_note(
                     include_frontmatter=include_frontmatter,
                     lines=lines_param,
                 )
+                from basic_memory.mcp.privacy_gate import denial_for
+
+                denial = denial_for(payload.get("frontmatter"), payload.get("file_path"))
+                if denial is not None:
+                    if output_format == "json":
+                        return {
+                            "title": None,
+                            "permalink": None,
+                            "file_path": None,
+                            "content": None,
+                            "frontmatter": None,
+                            "error": "NOT_VISIBLE",
+                            "message": denial,
+                        }
+                    return denial
                 if not line_scan:
                     return dict(payload)
                 first = payload["start_line"]
@@ -437,6 +455,11 @@ async def read_note(
                             "Returning read_note result from resource: {path}",
                             path=entity_path,
                         )
+                        from basic_memory.mcp.privacy_gate import denial_for_markdown
+
+                        denial = denial_for_markdown(response.text, entity_path)
+                        if denial is not None:
+                            return denial
                         return response.text
                 except Exception as error:  # pragma: no cover
                     logger.info(f"Direct lookup failed for '{entity_path}': {error}")
@@ -501,6 +524,11 @@ async def read_note(
                         logger.debug(
                             f"Found note by exact title search: {_result_permalink(result)}"
                         )
+                        from basic_memory.mcp.privacy_gate import denial_for_markdown
+
+                        denial = denial_for_markdown(response.text, _result_file_path(result))
+                        if denial is not None:
+                            return denial
                         return response.text
                 except Exception as error:  # pragma: no cover
                     logger.info(

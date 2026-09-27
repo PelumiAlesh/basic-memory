@@ -16,6 +16,7 @@ from basic_memory.config_migrations import (
     migrate_legacy_projects,
     migrate_legacy_sync_fields,
 )
+from basic_memory.shared_memory.privacy import ClientVisibilityPolicy
 from basic_memory.utils import generate_permalink
 
 
@@ -871,6 +872,16 @@ class BasicMemoryConfig(BaseSettings):
         ),
         gt=0,
     )
+    client_visibility: Dict[str, ClientVisibilityPolicy] = Field(
+        default_factory=dict,
+        description=(
+            "Per-client read policy keyed by the provenance client slug or the "
+            "bearer-token client. Example: chatgpt denies private and a folder. "
+            "When any policy exists, an unknown client may read only shareable notes. "
+            "Empty (default) does not filter. Env: BASIC_MEMORY_CLIENT_VISIBILITY as JSON."
+        ),
+    )
+
     care_oversized_bytes: int = Field(
         default=100_000,
         description=(

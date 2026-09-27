@@ -68,6 +68,7 @@ async def read_note_markdown(identifier: str, context: Context | None) -> str:
     permalinks_include_project=False — resolve_project_and_path resolves the
     whole path in the active/default project.
     """
+    entity_path = identifier
     try:
         route = await _route_for(identifier, context)
         # Both routing fields, the way every tool forwards them: the id is what
@@ -117,6 +118,13 @@ async def read_note_markdown(identifier: str, context: Context | None) -> str:
             f"{identifier!r} is {content_type or 'binary'}; use the read_content tool "
             "for non-text files"
         )
+    from basic_memory.mcp.privacy_gate import denial_for_markdown
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
+    denial = denial_for_markdown(response.text, entity_path)
+    if denial is not None:
+        raise ResourceError(denial)
     return response.text
 
 
