@@ -159,3 +159,42 @@ Settings (env vars use the `BASIC_MEMORY_` prefix):
 Delivery timestamps for `--conversation-id` are stored in
 `<project>/.basic-memory/brief-delivery.json`. Pass `--delivery-store` to override the path.
 This PR does not install SessionStart hooks; use `bm setup` when that lands in the stack.
+
+## Local usage log and `bm stats`
+
+Settings (local only; default on):
+
+| Setting | Default | Env |
+| --- | --- | --- |
+| `usage_log_enabled` | `true` | `BASIC_MEMORY_USAGE_LOG_ENABLED` |
+| `usage_log_retention_days` | `90` | `BASIC_MEMORY_USAGE_LOG_RETENTION_DAYS` |
+
+`brief_refresh_hours` (default `24`, see Brief) is the same clock the prompt-submit hooks use
+when deciding whether a resumed conversation should get another brief.
+
+Each project writes JSON lines to `<project>/.bm-logs/events-YYYY-MM-DD.jsonl` (UTC). The folder
+is mode `0700`, files `0600`, contains a `.gitignore` with `*`, and is excluded from indexing.
+Logs may contain permalinks and harness conversation ids. They never contain note bodies, full
+queries or prompts, or bearer tokens. Search queries log only length plus a short salted hash
+(salt file `usage_log_query_salt` in the config dir, mode `0600`).
+
+The long-running MCP server records tool calls through middleware (non-blocking queue, about 1 s
+or 100 events per flush). Per-turn harness hooks use a stdlib-only append path:
+
+- `bm hook prompt-submit --harness claude|cursor`
+- `bm hook turn-end --harness claude|cursor`
+- `bm hook post-mcp-tool --harness claude|cursor`
+
+`bm stats [--days N] [--json] [--project P]` reads only these local files. Terminal output may
+show conversation ids and permalinks; `--json` is aggregate-only for automation.
+
+**Harness capabilities verified in fixtures:** Claude Code sends `session_id` on
+UserPromptSubmit, Stop, and PostToolUse; tool names arrive as `mcp__basic-memory__<tool>`.
+Cursor desktop fixtures include `conversation_id` on beforeSubmitPrompt, stop, and
+afterMCPExecution plus `tool_name` on afterMCPExecution.
+
+**Gaps / fallbacks:** Cursor cloud agents do not fire those hooks. Cursor
+`beforeSubmitPrompt` output is documented as `continue` and `user_message` only, so injecting
+a brief on resume through that hook may be unavailable (use sessionStart or accept inferred
+brief metrics). HTTP clients without hooks (ChatGPT, Grok) get INFERRED session stats from MCP
+logs using a 30-minute idle gap.

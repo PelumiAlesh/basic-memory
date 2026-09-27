@@ -1,0 +1,6 @@
+{
+  "session_id": "claude-session-abc",
+  "cwd": "/tmp/project",
+  "hook_event_name": "UserPromptSubmit",
+  "prompt": "secret prompt text should never appear in logs"
+}

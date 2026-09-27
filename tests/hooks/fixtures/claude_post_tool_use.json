@@ -1,0 +1,6 @@
+{
+  "session_id": "claude-session-abc",
+  "tool_name": "mcp__basic-memory__search_notes",
+  "cwd": "/tmp/project",
+  "hook_event_name": "PostToolUse"
+}

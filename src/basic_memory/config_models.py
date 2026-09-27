@@ -681,7 +681,8 @@ class BasicMemoryConfig(BaseSettings):
         default=24.0,
         gt=0,
         description=(
-            "Minimum hours between bm brief deliveries for the same --conversation-id. "
+            "Minimum hours between brief deliveries for the same conversation, for "
+            "bm brief and for prompt-submit hooks. "
             "Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
         ),
     )
@@ -853,6 +854,20 @@ class BasicMemoryConfig(BaseSettings):
             "and loopback. Other origins get 403. "
             "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS (JSON list)"
         ),
+    )
+
+    usage_log_enabled: bool = Field(
+        default=True,
+        description=(
+            "Append local usage/debug events under each project's .bm-logs/ directory. "
+            "Local only; disabled in cloud deployments. Env: BASIC_MEMORY_USAGE_LOG_ENABLED"
+        ),
+    )
+
+    usage_log_retention_days: int = Field(
+        default=90,
+        description="Delete events-*.jsonl older than this many days. Env: BASIC_MEMORY_USAGE_LOG_RETENTION_DAYS",
+        gt=0,
     )
 
     # Legacy config keys / env vars mapped to their renamed fields.
