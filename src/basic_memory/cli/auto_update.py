@@ -26,6 +26,13 @@ BREW_OUTDATED_TIMEOUT_SECONDS = 60
 UV_UPGRADE_TIMEOUT_SECONDS = 180
 BREW_UPGRADE_TIMEOUT_SECONDS = 600
 
+# Builds of the PelumiAlesh fork carry this PEP 440 local label (0.23.2+pelumi.1).
+FORK_LOCAL_LABEL = "pelumi"
+FORK_INSTALL_COMMAND = (
+    "uv tool install --force --prerelease=allow "
+    '"basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@main"'
+)
+
 
 class HomebrewCheckError(RuntimeError):
     """Raised when `brew outdated` could not determine whether an update exists."""
@@ -48,6 +55,7 @@ class AutoUpdateStatus(str, Enum):
     UPDATE_AVAILABLE = "update_available"
     UPDATED = "updated"
     FAILED = "failed"
+    FORK_BUILD = "fork_build"
 
 
 @dataclass(frozen=True)
@@ -63,6 +71,12 @@ class AutoUpdateResult:
     message: str | None = None
     error: str | None = None
     restart_recommended: bool = False
+
+
+def is_fork_build(version: str) -> bool:
+    """Return whether a version carries the fork's local label, e.g. 0.23.2+pelumi.1."""
+    local_label = Version(version).local
+    return local_label is not None and local_label.split(".")[0] == FORK_LOCAL_LABEL
 
 
 def detect_install_source(executable: str | None = None) -> InstallSource:
@@ -270,12 +284,35 @@ def run_auto_update(
     config_manager: ConfigManager | None = None,
     now: datetime | None = None,
     executable: str | None = None,
+    replace_fork: bool = False,
 ) -> AutoUpdateResult:
     """Run update check/install flow and return a structured result."""
     manager = config_manager or ConfigManager()
     config = manager.load_config()
     source = detect_install_source(executable)
     checked_at = now or datetime.now()
+
+    # Trigger: the running build carries the fork's local version label.
+    # Why: the availability check compares against the upstream release (PyPI, the
+    #      Homebrew tap), which says nothing about the fork. Acting on it swaps in
+    #      upstream code (brew, pip) or re-fetches whatever the fork branch holds
+    #      (`uv tool upgrade` on a git install). Either must be deliberate.
+    # Outcome: no network check and no install; the message names the fork's own
+    #          reinstall command. Covers the CLI periodic check, the stdio MCP
+    #          background thread, and `bm update`, which all call this function.
+    if not replace_fork and is_fork_build(basic_memory.__version__):
+        return AutoUpdateResult(
+            status=AutoUpdateStatus.FORK_BUILD,
+            source=source,
+            checked=False,
+            update_available=False,
+            updated=False,
+            message=(
+                f"Basic Memory {basic_memory.__version__} is a fork build, so updates from "
+                f"the upstream release are disabled. Update the fork with: "
+                f"{FORK_INSTALL_COMMAND}"
+            ),
+        )
 
     if source == InstallSource.UVX:
         return AutoUpdateResult(

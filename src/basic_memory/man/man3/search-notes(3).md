@@ -26,7 +26,7 @@ search_notes(query=None, project=None, project_id=None,
              entity_types=None, categories=None, after_date=None,
              metadata_filters=None, tags=None, status=None,
              min_similarity=None, valid_at=None, valid_overlaps=None,
-             time_kind=None, compact=False)
+             time_kind=None, compact=False, include_inactive=False)
 ```
 
 CLI:
@@ -105,6 +105,7 @@ It is not a hard token budget: titles and metadata can still be large.
 - **valid_overlaps** (string | null, optional, default: None) — Optional PostgreSQL-style range literal ("[2026-06-10,2026-07-27)", "(,2026-07-27]", "[2026-06-10,)"). Returns sources whose authored valid range overlaps it. Mutually exclusive with valid_at; also excludes undated sources. Aliases: overlaps, valid_during.
 - **time_kind** (string | null, optional, default: None) — Optional kind of valid time to narrow to: "effective", "valid", "occurred", "due", or "mentioned". Valid on its own. Alias: kind.
 - **compact** (boolean, optional, default: False) — Omit note bodies and matched excerpts from results. Keep identifiers, metadata, relation targets, scores and pagination for discovery, then read selected notes.
+- **include_inactive** (boolean, optional, default: False) — Include notes whose frontmatter status is superseded or archived. Only matters when the search_exclude_inactive setting is on; exact permalink searches and status filters always include them.
 
 ## MCP USAGE
 

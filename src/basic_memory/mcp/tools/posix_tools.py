@@ -54,6 +54,7 @@ from basic_memory.mcp.project_context import (
     resolve_project_path_route,
 )
 from basic_memory.mcp.server import POSIX_TOOLS_TAG, mcp, set_posix_tools_visibility
+from basic_memory.mcp.tools.search import inactive_statuses_to_exclude
 from basic_memory.repository.metadata_filters import MetadataPath, parse_metadata_path
 from basic_memory.schemas.directory import (
     DEFAULT_DIRECTORY_PAGE_SIZE,
@@ -354,6 +355,7 @@ async def grep(
     context: Context | None = None,
     context_lines: int | None = None,
     max_matches: int = 10,
+    include_inactive: bool = False,
 ) -> dict[str, Any]:
     """Search note content, semantically by default.
 
@@ -369,6 +371,8 @@ async def grep(
         max_matches: Maximum matching lines to show per candidate in line mode (1-100,
             default 10). Omitted matches carry next_match_line for a targeted read_note
             or cat read. Edits between calls can shift line positions.
+        include_inactive: Include notes whose frontmatter status is superseded or
+            archived. Only matters when the search_exclude_inactive setting is on.
         project: Project name. Required when more than one project is addressable.
         project_id: Project external_id (UUID); takes precedence over `project`.
         context: Optional FastMCP context.
@@ -408,6 +412,7 @@ async def grep(
         text=pattern,
         retrieval_mode=_grep_retrieval_mode(literal),
         entity_types=[SearchItemType.ENTITY],
+        exclude_statuses=list(inactive_statuses_to_exclude(include_inactive)),
     )
     async with get_project_client(route.project, context=context, project_id=route.project_id) as (
         client,

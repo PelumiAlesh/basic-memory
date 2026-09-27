@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Shared memory fork
+
+- Fork builds identify themselves: `basic-memory --version` and the package metadata
+  both report `0.23.2+pelumi.1` (a PEP 440 local label) when installed from
+  `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The
+  periodic update check, the stdio MCP background update, and `bm update` no longer
+  replace a fork build with the upstream release; `bm update --force` does so on purpose.
+  See `docs/SHARED_MEMORY.md`.
+- `search_exclude_inactive` (default `false`) leaves notes whose frontmatter `status` is
+  `superseded` or `archived` out of `search_notes`, ChatGPT `search`, and `grep`
+  (`bm grep` too), in text, vector, and hybrid modes. Exact permalink searches and
+  explicit status filters still find them, and `include_inactive=true` includes them
+  for one call. With the setting off, searches run exactly the same SQL as upstream.
+  The search API gains `exclude_statuses`. Nothing marks a note superseded for you:
+  `supersedes` in frontmatter changes no other note.
+
 ### Features
 
 - **#1558**: `QUERY /v2/search/` (and `POST /v2/search/` for clients that cannot send

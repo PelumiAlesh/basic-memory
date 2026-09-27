@@ -155,8 +155,10 @@ dev = [
     "markitdown[docx,pptx]>=0.1.7,<0.2",
 ]
 
+# Fork: read the version from __version__ instead of git tags. The fork has no
+# release tags, so uv-dynamic-versioning produced 0.0.1.devN for git installs.
 [tool.hatch.version]
-source = "uv-dynamic-versioning"
+path = "src/basic_memory/__init__.py"
 
 # Explicit resources only: never ship integration venvs, caches, or test data.
 [tool.hatch.build.targets.wheel.force-include]

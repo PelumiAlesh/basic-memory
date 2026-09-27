@@ -16,9 +16,18 @@ def update(
         "--check",
         help="Check for updates only (do not install).",
     ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="On a fork build, update from the upstream release anyway (replaces the fork).",
+    ),
 ) -> None:
     """Check for updates and install when supported."""
-    result = run_auto_update(force=True, check_only=check, silent=False)
+    result = run_auto_update(force=True, check_only=check, silent=False, replace_fork=force)
+
+    if result.status == AutoUpdateStatus.FORK_BUILD:
+        print_update_status(console, f"{result.message}", "yellow")
+        raise typer.Exit(1)
 
     if result.status == AutoUpdateStatus.FAILED:
         detail = f" {result.error}" if result.error else ""

@@ -121,7 +121,8 @@ def test_dependency_floor_matches_package_version() -> None:
     text = SCRIPT.read_text(encoding="utf-8")
     floors = re.findall(r'^#     "basic-memory>=([^"]+)",$', text, re.MULTILINE)
 
-    assert floors == [__version__]
+    # A >= floor cannot carry the fork's PEP 440 local label (+pelumi.N).
+    assert floors == [__version__.split("+")[0]]
 
 
 def test_metadata_block_shape() -> None:
