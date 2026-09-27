@@ -33,3 +33,27 @@ Homebrew tap. Acting on that answer would install upstream code (Homebrew, pip) 
 whatever the fork branch holds at that moment (`uv tool upgrade` on a git install re-resolves the
 git URL). On a `+pelumi` build they stop before any network call and print the fork's own
 reinstall command. `bm update --force` runs the upstream update path on purpose.
+
+## Search: leave out superseded and archived notes
+
+Setting: `search_exclude_inactive` (default `false`; env `BASIC_MEMORY_SEARCH_EXCLUDE_INACTIVE`).
+
+```bash
+bm config set search_exclude_inactive true
+```
+
+When it is on, `search_notes`, ChatGPT `search`, and `grep` (including `bm grep`) leave out
+every note whose frontmatter `status` is `superseded` or `archived`, in any letter case. The
+note's observations and relations drop out with it. Text, vector, and hybrid search all apply
+it. A note with no `status`, or any other status, is unaffected.
+
+- These still find a superseded or archived note: an exact permalink search
+  (`search_type="permalink"` or a `memory://` URL), a status filter (`status="superseded"` or
+  `metadata_filters={"status": ...}`), `read_note`, `cat`, `find`, `build_context`, and
+  `recent_activity`.
+- `include_inactive=true` on `search_notes` or `grep` includes them for that one call.
+- You set the status. Nothing in this fork marks a note superseded: a `supersedes` key in
+  frontmatter is stored like any other key and changes no other note.
+- With the setting off, a search sends `exclude_statuses: null` and runs exactly the SQL
+  upstream runs. The search API's `exclude_statuses` field takes any list of statuses; an API
+  server that predates it ignores the field and returns unfiltered results.

@@ -80,6 +80,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "project_id",
         "context_lines",
         "max_matches",
+        "include_inactive",
     ],
     "list_directory": [
         "dir_name",
@@ -153,6 +154,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "valid_overlaps",
         "time_kind",
         "compact",
+        "include_inactive",
     ],
     "tail": ["timeframe", "lines", "project", "project_id"],
     "view_note": ["identifier", "project", "project_id"],
