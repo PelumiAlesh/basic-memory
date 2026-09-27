@@ -29,6 +29,7 @@ if not _version_only_invocation(sys.argv[1:]):
         import_claude_transcripts,
         import_document,
         import_memory_json,
+        import_notion,
         inspect,
         install,
         man,
