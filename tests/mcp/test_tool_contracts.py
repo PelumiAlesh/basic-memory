@@ -71,6 +71,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "project",
         "project_id",
     ],
+    "get_brief": ["project", "project_id", "token_budget"],
     "grep": [
         "pattern",
         "literal",
@@ -179,6 +180,7 @@ EXPECTED_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "basic_memory_diagnostics": {"readOnlyHint": True, "destructiveHint": False},
     "build_context": {"readOnlyHint": True, "destructiveHint": False},
     "fetch": {"readOnlyHint": True, "destructiveHint": False},
+    "get_brief": {"readOnlyHint": True, "destructiveHint": False},
     "list_directory": {"readOnlyHint": True, "destructiveHint": False},
     "list_memory_projects": {"readOnlyHint": True, "destructiveHint": False},
     "list_workspaces": {"readOnlyHint": True, "destructiveHint": False},
@@ -242,6 +244,7 @@ TOOL_FUNCTIONS: dict[str, object] = {
     "delete_project": tools.delete_project,
     "edit_note": tools.edit_note,
     "fetch": tools.fetch,
+    "get_brief": tools.get_brief,
     "find": tools.find,
     "grep": tools.grep,
     "list_directory": tools.list_directory,

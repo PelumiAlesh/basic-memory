@@ -10,6 +10,10 @@
 ![](https://badge.mcpx.dev?type=dev 'MCP Dev')
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/basicmachines-co/basic-memory)
 
+> **PelumiAlesh fork.** Builds from this repository report a `+pelumi.N` version. The
+> fork-only features, their settings, and how to install them are in
+> [docs/SHARED_MEMORY.md](docs/SHARED_MEMORY.md).
+
 ## Skip the install — try Basic Memory in the cloud
 
 Claude, Codex, or Cursor connected in 30 seconds. No Python, no JSON, no
