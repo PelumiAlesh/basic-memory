@@ -89,6 +89,19 @@ def test_codex_missing_fields_normalize_to_defaults() -> None:
 # --- Registry ---
 
 
+def test_cursor_session_start_fixture_normalizes() -> None:
+    payload = load_fixture("cursor_session_start.json")
+
+    event = for_harness("cursor").normalize(SESSION_STARTED, payload)
+
+    assert event.source == "cursor"
+    assert event.session_id == "conv-cursor-1"
+    assert event.turn_id == "gen-cursor-1"
+    assert event.cwd == "/Users/dev/vault"
+    assert event.trigger == "sessionStart"
+    assert event.model == "cursor-grok"
+
+
 def test_for_harness_rejects_unknown_harness() -> None:
-    with pytest.raises(ValueError, match="Unknown harness 'cursor'"):
-        for_harness("cursor")
+    with pytest.raises(ValueError, match="Unknown harness 'notepad'"):
+        for_harness("notepad")

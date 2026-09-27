@@ -485,3 +485,18 @@ def install_pi(
     typer.echo("Restart Pi, then run /skill:basic-memory-pi-setup to choose project routing.")
     typer.echo("Use /bm-status, /bm-recall, and /bm-capture to verify continuity.")
     typer.echo("Connection, recall, and continuity are unverified; no Pi session was started.")
+
+
+@install_app.command("cursor")
+def install_cursor() -> None:
+    """Install user-level Cursor hooks for a session brief and capture.
+
+    Writes ~/.cursor/hooks.json (Cursor's flat schema: sessionStart and
+    preCompact). Cloud agents do not run user hooks or sessionStart; put the
+    same entries in the project's .cursor/hooks.json if you need them there.
+    Routing still comes from .cursor/basic-memory.json (`primaryProject`).
+    """
+    from basic_memory.cli.commands.hook import Harness
+    from basic_memory.cli.commands.hook import install as install_hooks
+
+    install_hooks(Harness.cursor)

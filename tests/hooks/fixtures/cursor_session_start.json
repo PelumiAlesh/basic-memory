@@ -1,0 +1,7 @@
+{
+  "conversation_id": "conv-cursor-1",
+  "generation_id": "gen-cursor-1",
+  "hook_event_name": "sessionStart",
+  "workspace_roots": ["/Users/dev/vault"],
+  "model": "cursor-grok"
+}

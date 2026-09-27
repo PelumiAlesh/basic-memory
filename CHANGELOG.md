@@ -4,6 +4,15 @@
 
 ### Features
 
+- Cursor hooks. `bm hook` accepts `--harness cursor` and normalizes Cursor's
+  stdin (`conversation_id`, `generation_id`, `workspace_roots`,
+  `hook_event_name`). `sessionStart` prints `{"additional_context": ...}` so
+  the brief is injected. `bm hook install --harness cursor` and
+  `bm install cursor` write `~/.cursor/hooks.json` (`sessionStart`,
+  `preCompact`). Project routing is `.cursor/basic-memory.json`
+  (`primaryProject`). Cloud agents do not run user-level `sessionStart`; copy
+  the entries into the project's `.cursor/hooks.json` for those.
+
 - Optional git autocommit (`git_autocommit`, default false). After an MCP write
   or edit, the note file is committed in the project repository, debounced by
   `git_autocommit_debounce_seconds` (default 2). The message is
