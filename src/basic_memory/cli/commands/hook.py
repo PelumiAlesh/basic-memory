@@ -1335,6 +1335,46 @@ def stop(harness: Harness = HARNESS_OPTION) -> None:
     print('{"continue":true}')
 
 
+@hook_app.command("fork-cursor-session-start")
+def fork_cursor_session_start() -> None:
+    """Cursor sessionStart: inject brief via additional_context when due."""
+    from basic_memory.setup.fork_hooks import run_cursor_session_start
+
+    _run_fail_open("fork-cursor-session-start", run_cursor_session_start)
+
+
+@hook_app.command("fork-cursor-before-prompt")
+def fork_cursor_before_prompt() -> None:
+    """Cursor beforeSubmitPrompt: no context injection (schema limitation)."""
+    from basic_memory.setup.fork_hooks import run_cursor_before_prompt
+
+    _run_fail_open("fork-cursor-before-prompt", run_cursor_before_prompt)
+
+
+@hook_app.command("fork-cursor-stop")
+def fork_cursor_stop() -> None:
+    """Cursor stop: optional local session capture."""
+    from basic_memory.setup.fork_hooks import run_cursor_stop
+
+    _run_fail_open("fork-cursor-stop", run_cursor_stop)
+
+
+@hook_app.command("fork-claude-user-prompt")
+def fork_claude_user_prompt() -> None:
+    """Claude Code UserPromptSubmit: re-deliver brief when due."""
+    from basic_memory.setup.fork_hooks import run_claude_user_prompt
+
+    _run_fail_open("fork-claude-user-prompt", run_claude_user_prompt)
+
+
+@hook_app.command("fork-claude-stop")
+def fork_claude_stop() -> None:
+    """Claude Code Stop: optional local session capture."""
+    from basic_memory.setup.fork_hooks import run_claude_stop
+
+    _run_fail_open("fork-claude-stop", run_claude_stop)
+
+
 @hook_app.command("flush")
 def flush(
     older_than_days: int = typer.Option(
