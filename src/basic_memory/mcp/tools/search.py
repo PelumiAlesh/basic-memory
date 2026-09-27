@@ -14,6 +14,7 @@ from fastmcp import Context
 from pydantic import AliasChoices, BeforeValidator, Field
 
 from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.provenance import provenance_lines
 from basic_memory.utils import (
     build_canonical_permalink,
     coerce_dict,
@@ -545,6 +546,8 @@ def _format_search_markdown(
         if r.external_id:
             parts.append(f"- external_id: {r.external_id}")
         parts.append(f"- score: {r.score:.4f}")
+        for line in provenance_lines(r.metadata):
+            parts.append(f"- {line}")
         if r.matched_chunk:
             parts.append(f"- match: {r.matched_chunk[:200]}")
         # Name the kind and the units. A bare "2026-06-10" here would read as an edit

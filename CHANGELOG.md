@@ -4,6 +4,14 @@
 
 ### Features
 
+- MCP writes and edits record which client wrote the note when that client
+  sends `clientInfo` and `record_provenance` is on (the default). Frontmatter
+  gains `source_client` and `updated` on every such write, and
+  `created_by_client` on the first write only. Later edits keep the original
+  creator. Search text results list those fields when the index has them.
+  Anonymous writes (no client identity) are unchanged. Cloud `created_by`
+  remains the account id. Turn the stamp off with `record_provenance=false`.
+
 - **#1558**: `QUERY /v2/search/` (and `POST /v2/search/` for clients that cannot send
   QUERY) searches an explicit set of projects in one database with one query. The body
   is the project search body plus `project_ids`, a required list of internal ids the
