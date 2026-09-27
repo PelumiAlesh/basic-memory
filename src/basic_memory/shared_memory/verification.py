@@ -64,9 +64,17 @@ def verify_full_write(expected_content: str, stored_markdown: str | None) -> Wri
     checks: dict[str, str] = {}
     if stored_markdown is None:
         return WriteVerification("failed", {"index": "missing"}, "note was not found after write")
+    # An empty body is a substring of every note, so it cannot use the containment
+    # check below. Equality is the only honest comparison: a blank write that left
+    # the old body in place is a mismatch, not a pass.
     if not expected:
-        checks["index"] = "ok"
-        return WriteVerification("verified", checks)
+        if not actual:
+            checks["index"] = "ok"
+            return WriteVerification("verified", checks)
+        checks["index"] = "mismatch"
+        return WriteVerification(
+            "failed", checks, "stored content does not contain what was written"
+        )
     if expected in actual:
         if len(expected) >= DUPLICATE_MIN_CHARS and count_occurrences(actual, expected) > 1:
             checks["index"] = "duplicated"

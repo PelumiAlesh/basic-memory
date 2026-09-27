@@ -42,6 +42,14 @@ def test_full_write_detects_duplication_and_missing_note() -> None:
     assert missing.checks["index"] == "missing"
 
 
+def test_empty_write_matches_only_an_empty_body() -> None:
+    blank = "---\ntitle: Plan\n---\n"
+    assert verify_full_write("", blank).status == "verified"
+    leftover = verify_full_write("", STORED)
+    assert leftover.status == "failed"
+    assert leftover.checks["index"] == "mismatch"
+
+
 def test_full_write_mismatch_is_named() -> None:
     result = verify_full_write(BODY, "---\ntitle: Plan\n---\n\nSomething else entirely.")
     assert result.status == "failed"
