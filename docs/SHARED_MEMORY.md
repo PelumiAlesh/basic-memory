@@ -114,3 +114,7 @@ fork puts a bearer-token gate in front of them.
   origin, and per-app settings because they are lists and maps.
 - Plain HTTP carries the token in clear text. Keep the server on loopback, or put TLS in front
   of it. For Docker, see [Docker.md](Docker.md).
+
+## Session capture (v2)
+
+End-of-session transcript capture stays **off** on the v2 stack until privacy and inbox routing are redesigned. Do not enable ``session_capture_enabled`` in fork deployments.
