@@ -748,6 +748,63 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    mcp_http_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Host the MCP HTTP and SSE transports bind to when --host is omitted. "
+            "Defaults to loopback. Set 0.0.0.0 only together with a bearer token. "
+            "Env: BASIC_MEMORY_MCP_HTTP_HOST"
+        ),
+    )
+    mcp_http_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bearer token required on MCP HTTP/SSE when set. Prefer "
+            "BASIC_MEMORY_MCP_HTTP_TOKEN. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN"
+        ),
+    )
+    mcp_http_token_client: str = Field(
+        default="http",
+        description=(
+            "Client slug recorded for requests that present mcp_http_token. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN_CLIENT"
+        ),
+    )
+    mcp_http_clients: str = Field(
+        default="",
+        description=(
+            "Additional bearer tokens as comma-separated client:token pairs, "
+            "for example chatgpt:secret. The token is a secret and is never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_CLIENTS"
+        ),
+    )
+    mcp_http_allowed_hosts: str = Field(
+        default="",
+        description=(
+            "Comma-separated hostnames accepted in the Host header of MCP HTTP requests, "
+            "in addition to loopback and the bound address. Required for a tunnel "
+            "hostname such as memory.example.com. Other hosts get 421. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS"
+        ),
+    )
+    mcp_http_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated browser origins accepted in the Origin header of MCP HTTP "
+            "requests, in addition to same-origin and loopback. Others get 403. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS"
+        ),
+    )
+    mcp_oauth_issuer: Optional[str] = Field(
+        default=None,
+        description=(
+            "External OAuth 2.1 authorization-server URL advertised at "
+            "/.well-known/oauth-protected-resource. This server does not mint "
+            "tokens. Env: BASIC_MEMORY_MCP_OAUTH_ISSUER"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

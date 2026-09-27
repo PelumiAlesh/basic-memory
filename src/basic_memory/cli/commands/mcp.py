@@ -26,8 +26,12 @@ mcp_server = _DeferredMcpServer()
 @app.command()
 def mcp(
     transport: str = typer.Option("stdio", help="Transport type: stdio, streamable-http, or sse"),
-    host: str = typer.Option(
-        "0.0.0.0", help="Host for HTTP transports (use 0.0.0.0 to allow external connections)"
+    host: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Host for HTTP transports. Defaults to 127.0.0.1 "
+            "(config mcp_http_host). Pass 0.0.0.0 only with a bearer token."
+        ),
     ),
     port: int = typer.Option(8000, help="Port for HTTP transports"),
     path: str = typer.Option("/mcp", help="Path prefix for streamable-http transport"),
@@ -119,10 +123,24 @@ def mcp(
             transport=transport,
         )
     elif transport == "streamable-http" or transport == "sse":
+        # Imported here so stdio startup does not register the HTTP route, and
+        # so the bearer gate exists before the transport accepts a connection.
+        from basic_memory.mcp.http_auth import http_middleware, warn_if_http_exposed
+        from basic_memory.shared_memory.http_security import (
+            host_origin_settings,
+            resolve_bind_host,
+        )
+
+        app_config = ConfigManager().config
+        bind_host = resolve_bind_host(host, app_config.mcp_http_host)
+        warn_if_http_exposed(bind_host)
+        logger.info(f"MCP HTTP transport bound to {bind_host}:{port}")
         mcp_server.run(
             transport=transport,
-            host=host,
+            host=bind_host,
             port=port,
             path=path,
             log_level="INFO",
+            middleware=http_middleware(),
+            **host_origin_settings(app_config),
         )
