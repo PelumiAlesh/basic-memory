@@ -6,7 +6,10 @@ from pathlib import Path
 
 from fastmcp.exceptions import ToolError
 
-from basic_memory.shared_memory.file_history import FileHistoryError, snapshot_before_destructive_write
+from basic_memory.shared_memory.file_history import (
+    FileHistoryError,
+    snapshot_before_destructive_write,
+)
 
 
 def _local_root(home: object) -> Path | None:

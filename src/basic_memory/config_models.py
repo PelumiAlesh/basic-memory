@@ -800,6 +800,22 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    brief_refresh_hours: float = Field(
+        default=6.0,
+        description=(
+            "Minimum hours between automatic brief re-delivery for the same harness "
+            "conversation id. Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
+        ),
+    )
+
+    session_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, fork setup hooks append conversation turns into inbox/ notes "
+            "(local only). Env: BASIC_MEMORY_SESSION_CAPTURE_ENABLED"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
