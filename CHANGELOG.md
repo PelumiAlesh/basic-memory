@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Shared memory fork
+
+- Fork builds identify themselves: `basic-memory --version` and the package metadata
+  both report `0.23.2+pelumi.1` (a PEP 440 local label) when installed from
+  `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The
+  periodic update check, the stdio MCP background update, and `bm update` no longer
+  replace a fork build with the upstream release; `bm update --force` does so on purpose.
+  See `docs/SHARED_MEMORY.md`.
+
 ### Features
 
 - **#1558**: `QUERY /v2/search/` (and `POST /v2/search/` for clients that cannot send
