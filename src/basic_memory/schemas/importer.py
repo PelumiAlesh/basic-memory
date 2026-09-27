@@ -33,3 +33,11 @@ class EntityImportResult(ImportResult):
     entities: int = 0
     relations: int = 0
     skipped_entities: int = 0
+
+
+class NotionImportResult(ImportResult):
+    """Result schema for a Notion Markdown and CSV export."""
+
+    notes: int = 0
+    csv_rows: int = 0
+    skipped: int = 0
