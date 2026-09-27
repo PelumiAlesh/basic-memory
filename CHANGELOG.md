@@ -4,6 +4,14 @@
 
 ### Features
 
+- `bm import notion <zip-or-folder>` imports a Notion Markdown & CSV export
+  under `imports/notion/` (override with `--destination`). Notion's
+  32-character id suffixes are stripped from file and folder names, relative
+  links become wiki links, and each database CSV row becomes a note whose
+  frontmatter is the row's properties. A sibling `*_all.csv` is skipped when
+  the plain CSV is present. Zip entries that escape the destination are
+  rejected.
+
 - Cursor hooks. `bm hook` accepts `--harness cursor` and normalizes Cursor's
   stdin (`conversation_id`, `generation_id`, `workspace_roots`,
   `hook_event_name`). `sessionStart` prints `{"additional_context": ...}` so
