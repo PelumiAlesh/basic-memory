@@ -4,6 +4,19 @@
 
 ### Features
 
+- Shared MCP server mode (`mcp_shared_server`, default false). One long-running
+  HTTP process is the supported path for several local clients against one
+  vault. The process claims a pidfile under the config dir, serializes
+  canonical note writes in-process (SQLite WAL still serves concurrent reads),
+  and refuses a second MCP process with a clear message. `list_clients` and
+  `bm status --shared` show client slugs and last writes; tokens are never
+  logged. Single-client stdio is unchanged until the flag is on.
+
+- End-of-session capture (`session_capture_enabled`, default false). Cursor
+  `stop` and Claude Code `Stop`/`SessionEnd` write a short private,
+  unreviewed session summary into the review inbox, idempotent per session
+  id. Codex `stop` stays a continue no-op. Does not copy private note bodies.
+
 - Write verification. After `write_note`, `edit_note`, `move_note`, and
   `delete_note`, the tool reads the note back from the index and, for a local
   project, from disk after draining pending materialization. The response
