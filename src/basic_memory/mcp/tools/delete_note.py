@@ -7,6 +7,8 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
+from basic_memory.mcp.write_verification import verify_note_delete
+from basic_memory.shared_memory.write_safety import snapshot_local_note
 from basic_memory.mcp.project_context import (
     detect_project_from_memory_url_prefix,
     get_project_client,
@@ -459,20 +461,39 @@ delete_note("path/to/file.md")
             )
 
         try:
+            if note_file_path is None:
+                entity_for_path = await knowledge_client.get_entity(entity_id)
+                note_file_path = entity_for_path.file_path
+            snapshot_local_note(active_project.home, note_file_path)
+
             # Call the DELETE endpoint
             result = await knowledge_client.delete_entity(entity_id)
+
+            verification = None
+            if ConfigManager().config.verify_writes:
+                verification = await verify_note_delete(
+                    knowledge_client,
+                    external_id=entity_id,
+                    file_path=note_file_path,
+                    project_home=active_project.home,
+                )
 
             if result.deleted:
                 logger.info(
                     f"Successfully deleted note: {identifier} in project: {active_project.name}"
                 )
                 if output_format == "json":
-                    return {
+                    payload: dict[str, Any] = {
                         "deleted": True,
                         "title": note_title,
                         "permalink": note_permalink,
                         "file_path": note_file_path,
                     }
+                    if verification is not None:
+                        payload["verification"] = verification.as_dict()
+                        if verification.status == "failed":
+                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    return payload
                 return True
             else:
                 logger.warning(  # pragma: no cover

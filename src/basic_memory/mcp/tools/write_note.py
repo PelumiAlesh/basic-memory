@@ -14,6 +14,8 @@ from pydantic import AliasChoices, BeforeValidator, Field
 from basic_memory.config import ConfigManager
 from basic_memory.file_utils import remove_frontmatter
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
+from basic_memory.mcp.write_verification import verify_note_write
+from basic_memory.shared_memory.write_safety import snapshot_local_note
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -395,6 +397,7 @@ async def write_note(
             client,
             active_project,
         ):
+            app_config = ConfigManager().config
             logger.debug(
                 f"MCP tool call tool=write_note project={active_project.name} directory={directory}, title={title}, tags={tags}"
             )
@@ -433,9 +436,7 @@ async def write_note(
             if tag_list:
                 entity_metadata["tags"] = tag_list
             # Provenance goes on last so a caller-supplied bm_* value cannot mask it.
-            if ConfigManager().config.record_provenance and (
-                client_name := await request_client(context)
-            ):
+            if app_config.record_provenance and (client_name := await request_client(context)):
                 entity_metadata.update(provenance_stamp(client_name, datetime.now(timezone.utc)))
 
             entity = Entity(
@@ -452,6 +453,12 @@ async def write_note(
 
             # Use typed KnowledgeClient for API calls
             knowledge_client = KnowledgeClient(client, active_project.external_id)
+
+            # Trigger: overwrite may replace bytes already on disk.
+            # Why: `.bm-history/` is the local undo copy, independent of git (#10).
+            # Outcome: the write aborts when the snapshot fails.
+            if effective_overwrite:
+                snapshot_local_note(active_project.home, entity.file_path)
 
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
@@ -596,12 +603,27 @@ async def write_note(
                     _format_similar_notes_section(similar_notes, new_permalink=response_permalink)
                 )
 
+            verification = None
+            if app_config.verify_writes:
+                verification = await verify_note_write(
+                    knowledge_client,
+                    external_id=result.external_id,
+                    expected_content=content,
+                    project_home=active_project.home,
+                )
+                summary.append(verification.as_text())
+                if verification.status == "failed":
+                    logger.warning(
+                        f"write_note verification failed project={active_project.name} "
+                        f"permalink={response_permalink}: {verification.error}"
+                    )
+
             # Log the response with structured data
             logger.debug(
                 f"MCP tool response: tool=write_note project={active_project.name} action={action} permalink={response_permalink} observations_count={len(result.observations)} relations_count={len(result.relations)} resolved_relations={resolved} unresolved_relations={unresolved} similar_notes_count={len(similar_notes)}"
             )
             if output_format == "json":
-                return {
+                payload: dict[str, Any] = {
                     "title": result.title,
                     "permalink": response_permalink,
                     "file_path": result.file_path,
@@ -609,6 +631,11 @@ async def write_note(
                     "action": action.lower(),
                     "similar_notes": [dataclasses.asdict(note) for note in similar_notes],
                 }
+                if verification is not None:
+                    payload["verification"] = verification.as_dict()
+                    if verification.status == "failed":
+                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                return payload
 
             summary_result = "\n".join(summary)
             return add_project_metadata(summary_result, active_project.name)

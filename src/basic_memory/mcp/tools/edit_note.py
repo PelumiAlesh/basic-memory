@@ -22,6 +22,8 @@ from basic_memory.file_utils import (
     remove_frontmatter,
 )
 from basic_memory.ignore_utils import IGNORED_PATH_REJECTION_DETAIL
+from basic_memory.mcp.write_verification import verify_note_edit, verify_note_write
+from basic_memory.shared_memory.write_safety import snapshot_local_note
 from basic_memory.mcp.project_context import (
     UnresolvedProjectRouteError,
     _workspace_identifier_discovery_available,
@@ -660,6 +662,8 @@ async def edit_note(
                 file_created = False
                 entity_id = ""
                 result: EntityResponse | None = None
+                before_markdown: str | None = None
+                app_config = ConfigManager().config
 
                 # Try to resolve the entity; for append/prepend, create it if not found
                 try:
@@ -770,6 +774,9 @@ async def edit_note(
 
                 # --- Standard edit path (entity already existed) ---
                 if not file_created:
+                    before_entity = await knowledge_client.get_entity(entity_id)
+                    before_markdown = before_entity.content
+                    snapshot_local_note(active_project.home, before_entity.file_path)
                     # Prepare the edit request data
                     edit_data = {
                         "operation": operation,
@@ -854,6 +861,38 @@ async def edit_note(
                     if unresolved:
                         summary.append(f"- Unresolved: {unresolved}")
 
+                verification = None
+                if app_config.verify_writes:
+                    if file_created:
+                        if not result.external_id:
+                            raise ToolError(
+                                "edit_note created a note but the API returned no external_id; "
+                                "cannot verify the write."
+                            )
+                        verification = await verify_note_write(
+                            knowledge_client,
+                            external_id=result.external_id,
+                            expected_content=content,
+                            project_home=active_project.home,
+                        )
+                    else:
+                        verification = await verify_note_edit(
+                            knowledge_client,
+                            external_id=entity_id,
+                            operation=operation,
+                            new_content=content,
+                            before_markdown=before_markdown,
+                            find_text=find_text,
+                            expected_replacements=effective_replacements,
+                            project_home=active_project.home,
+                        )
+                    summary.append(verification.as_text())
+                    if verification.status == "failed":
+                        logger.warning(
+                            f"edit_note verification failed project={active_project.name} "
+                            f"permalink={result.permalink}: {verification.error}"
+                        )
+
                 logger.debug(
                     f"MCP tool response: tool=edit_note project={active_project.name} "
                     f"operation={operation} permalink={result.permalink} "
@@ -863,7 +902,7 @@ async def edit_note(
                 )
 
                 if output_format == "json":
-                    return {
+                    payload: dict[str, Any] = {
                         "title": result.title,
                         "permalink": result.permalink,
                         "file_path": result.file_path,
@@ -871,6 +910,11 @@ async def edit_note(
                         "operation": operation,
                         "fileCreated": file_created,
                     }
+                    if verification is not None:
+                        payload["verification"] = verification.as_dict()
+                        if verification.status == "failed":
+                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    return payload
 
                 summary_result = "\n".join(summary)
                 return add_project_metadata(summary_result, active_project.name)
