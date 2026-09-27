@@ -780,6 +780,23 @@ class BasicMemoryConfig(BaseSettings):
             "Env: BASIC_MEMORY_MCP_HTTP_CLIENTS"
         ),
     )
+    mcp_http_allowed_hosts: str = Field(
+        default="",
+        description=(
+            "Comma-separated hostnames accepted in the Host header of MCP HTTP requests, "
+            "in addition to loopback and the bound address. Required for a tunnel "
+            "hostname such as memory.example.com. Other hosts get 421. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS"
+        ),
+    )
+    mcp_http_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated browser origins accepted in the Origin header of MCP HTTP "
+            "requests, in addition to same-origin and loopback. Others get 403. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS"
+        ),
+    )
     mcp_oauth_issuer: Optional[str] = Field(
         default=None,
         description=(

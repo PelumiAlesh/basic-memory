@@ -52,6 +52,26 @@ def resolve_bind_host(cli_host: str | None, configured_host: str) -> str:
     return configured or "127.0.0.1"
 
 
+def allow_list(raw: str) -> list[str]:
+    """Split a comma-separated config value; blanks drop out."""
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def host_origin_settings(config: BasicMemoryConfig) -> dict[str, object]:
+    """Keyword arguments for FastMCP's Host/Origin guard.
+
+    Protection is always on (`strict`): the Host header must be loopback, the
+    bound address, or a configured allow-list entry, and a browser Origin must
+    be same-origin, loopback, or allow-listed. That is what keeps a DNS-rebinding
+    page or a stray reverse proxy from reaching the server (upstream #1578).
+    """
+    return {
+        "host_origin_protection": True,
+        "allowed_hosts": allow_list(config.mcp_http_allowed_hosts),
+        "allowed_origins": allow_list(config.mcp_http_allowed_origins),
+    }
+
+
 def _pairs(raw: str) -> dict[str, str]:
     """Parse `client:token,client:token` without echoing either side on failure."""
     tokens: dict[str, str] = {}

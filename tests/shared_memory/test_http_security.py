@@ -7,6 +7,7 @@ from basic_memory.config_models import BasicMemoryConfig
 from basic_memory.shared_memory.http_security import (
     HttpAuthRejected,
     client_for_authorization,
+    host_origin_settings,
     http_auth_config,
     is_loopback_host,
     protected_resource_metadata,
@@ -29,9 +30,7 @@ def test_bind_host_defaults_to_loopback() -> None:
 
 
 def test_single_token_maps_to_named_client() -> None:
-    auth = http_auth_config(
-        _config(mcp_http_token="secret-token", mcp_http_token_client="chatgpt")
-    )
+    auth = http_auth_config(_config(mcp_http_token="secret-token", mcp_http_token_client="chatgpt"))
     assert client_for_authorization("Bearer secret-token", auth) == "chatgpt"
     assert auth.required
 
@@ -50,6 +49,66 @@ def test_client_token_pairs_and_rejection_do_not_echo_the_secret() -> None:
     assert secret not in str(raised.value)
 
 
+def test_host_origin_guard_is_strict_with_allow_lists() -> None:
+    settings = host_origin_settings(
+        _config(
+            mcp_http_allowed_hosts="memory.example.com, tunnel.example.net",
+            mcp_http_allowed_origins="https://chat.openai.com",
+        )
+    )
+    assert settings["host_origin_protection"] is True
+    assert settings["allowed_hosts"] == ["memory.example.com", "tunnel.example.net"]
+    assert settings["allowed_origins"] == ["https://chat.openai.com"]
+    default = host_origin_settings(_config())
+    assert default["host_origin_protection"] is True
+    assert default["allowed_hosts"] == []
+    assert default["allowed_origins"] == []
+
+
+@pytest.mark.asyncio
+async def test_fastmcp_guard_rejects_unlisted_host_and_origin() -> None:
+    from fastmcp.server.http import HostOriginGuardMiddleware
+
+    statuses: list[int] = []
+
+    async def app(scope, receive, send):  # noqa: ANN001
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        if message["type"] == "http.response.start":
+            statuses.append(message["status"])
+
+    settings = host_origin_settings(_config(mcp_http_allowed_hosts="memory.example.com"))
+    guard = HostOriginGuardMiddleware(
+        app,
+        allowed_hosts=settings["allowed_hosts"],  # type: ignore[arg-type]
+        allowed_origins=settings["allowed_origins"],  # type: ignore[arg-type]
+        mode="strict",
+    )
+
+    def scope_for(host: bytes, origin: bytes | None = None) -> dict:
+        headers = [(b"host", host)]
+        if origin is not None:
+            headers.append((b"origin", origin))
+        return {
+            "type": "http",
+            "path": "/mcp",
+            "headers": headers,
+            "server": ("127.0.0.1", 8000),
+            "scheme": "http",
+        }
+
+    await guard(scope_for(b"127.0.0.1:8000"), receive, send)
+    await guard(scope_for(b"memory.example.com"), receive, send)
+    await guard(scope_for(b"evil.example.org"), receive, send)
+    await guard(scope_for(b"127.0.0.1:8000", b"https://attacker.example"), receive, send)
+    assert statuses == [200, 200, 421, 403]
+
+
 def test_open_when_no_token_configured() -> None:
     auth = http_auth_config(_config())
     assert client_for_authorization(None, auth) is None
@@ -58,9 +117,7 @@ def test_open_when_no_token_configured() -> None:
 
 def test_www_authenticate_has_no_token() -> None:
     secret = "super-secret-value"
-    auth = http_auth_config(
-        _config(mcp_http_token=secret, mcp_oauth_issuer="https://auth.example")
-    )
+    auth = http_auth_config(_config(mcp_http_token=secret, mcp_oauth_issuer="https://auth.example"))
     challenge = www_authenticate(auth)
     assert secret not in challenge
     assert "resource_metadata" in challenge

@@ -24,6 +24,15 @@
   overwrite is undoable before its own commit lands. Moves and deletes are
   committed after the write as well. `git_auto_push` stays off by default.
 
+- `bm import claude transcripts [path]` imports Claude Code session transcripts
+  (the JSONL files under `~/.claude/projects`, which Claude Code prunes after
+  about thirty days; upstream #1527). Each session becomes one
+  `type: conversation` note under `conversations/claude-code/` with the
+  session id, cwd, branch, start and end times in frontmatter. Human and
+  assistant prose are kept; tool calls, tool results, meta frames, and
+  subagent sidechains are dropped. Re-runs skip notes that already exist
+  (`--include-existing` rewrites them); `--since-days N` limits the scan.
+
 - `bm import notion <zip-or-folder>` imports a Notion Markdown & CSV export
   under `imports/notion/` (override with `--destination`). Notion's
   32-character id suffixes are stripped from file and folder names, relative
@@ -97,6 +106,12 @@
   `brief_decision_days` (default 14), open-question and unreviewed counts, and
   notes updated in the last seven days. The default budget is
   `brief_token_budget` (1500). Later sections are dropped first.
+
+- MCP HTTP and SSE transports check Host and Origin on every request
+  (FastMCP's guard in strict mode). The Host must be loopback, the bound
+  address, or a name in `mcp_http_allowed_hosts` (421 otherwise); a browser
+  Origin must be same-origin, loopback, or in `mcp_http_allowed_origins`
+  (403 otherwise). A tunnel hostname belongs in `mcp_http_allowed_hosts`.
 
 - MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
   or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or

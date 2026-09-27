@@ -21,11 +21,42 @@ When an MCP client sends `clientInfo`, `write_note` and `edit_note` set:
 Writes with no client identity are unchanged. Search text results list the
 fields when the index has them. Read results include them in frontmatter.
 
+### Write verification
+
+`verify_writes` (default `true`). Env: `BASIC_MEMORY_VERIFY_WRITES`.
+
+After `write_note`, `edit_note`, `move_note`, and `delete_note`, the tool
+reads the note back from the index and, for a local project, from disk
+(after waiting up to five seconds for pending materialization). The response
+ends with:
+
+```
+## Verification
+status: verified
+index: ok
+disk: ok
+```
+
+`status` is `verified`, `pending` (the file write had not finished), or
+`failed`. A failed verdict names the reason: `missing`, `truncated`,
+`duplicated`, or `mismatch` for the index; `missing` or `mismatch` for the
+file. JSON output carries the same under `verification`, sets
+`error: WRITE_VERIFICATION_FAILED`, and turns `moved` / `deleted` false.
+Cloud projects report `disk: remote`. This is the answer to the false
+"saved" reports in upstream #1341, #1531, #1479, and #1585.
+
 ## 2. Secure HTTP
 
 `basic-memory mcp --transport streamable-http` binds to `127.0.0.1` unless
 you pass `--host` or set `mcp_http_host`. A non-loopback bind without a token
 logs a warning.
+
+Host and Origin are always checked (FastMCP's guard in strict mode). The
+Host header must be loopback, the bound address, or a name in
+`mcp_http_allowed_hosts`; anything else is answered 421. A browser Origin
+must be same-origin, loopback, or in `mcp_http_allowed_origins`; anything
+else is 403. Both are comma-separated. A tunnel hostname goes in
+`mcp_http_allowed_hosts`.
 
 Bearer token, never logged:
 
@@ -47,6 +78,7 @@ tools this server already exposes.
 ```bash
 export BASIC_MEMORY_MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
 export BASIC_MEMORY_MCP_HTTP_TOKEN_CLIENT=chatgpt
+export BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS=memory.example.com
 basic-memory mcp --transport streamable-http --port 8000
 ```
 
