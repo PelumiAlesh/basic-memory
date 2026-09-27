@@ -13,6 +13,15 @@ from basic_memory.config import ConfigManager
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
 from basic_memory.schemas.project_info import ProjectItem
+from basic_memory.shared_memory.verification import (
+    Failed,
+    Verification,
+    local_project_root,
+    verification_failure_text,
+    verification_line,
+    verification_payload,
+    verify_moved_note,
+)
 from basic_memory.utils import (
     generate_permalink,
     normalize_project_reference,
@@ -994,6 +1003,46 @@ move_note("{identifier}", destination_folder="notes")
                     ```
                     """).strip()
 
+            # --- Read-back verification ---
+            # Trigger: verify_writes is on (the default).
+            # Why: the API's answer says where the note should be, not that its file got
+            #      there. A move that leaves the old file behind is a second copy; one
+            #      that loses the new file is a lost note.
+            # Outcome: a move that does not read back as requested turns this call into
+            #          an error; a file still being written is reported as pending.
+            verification: Verification | None = None
+            config = ConfigManager().config
+            if config.verify_writes:
+                verification = await verify_moved_note(
+                    knowledge_client,
+                    resolved_entity_id,
+                    before=source_entity,
+                    destination=result.file_path,
+                    local_root=local_project_root(active_project, config),
+                )
+            if isinstance(verification, Failed):
+                logger.warning(
+                    f"move_note verification failed project={active_project.name} "
+                    f"file_path={result.file_path} reason={verification.reason}"
+                )
+                if output_format == "json":
+                    return {
+                        "moved": False,
+                        "title": result.title,
+                        "permalink": result.permalink,
+                        "file_path": result.file_path,
+                        "source": identifier,
+                        "destination": destination_path,
+                        "verification": verification_payload(verification),
+                        "error": "WRITE_VERIFICATION_FAILED",
+                    }
+                return verification_failure_text(
+                    "Move Failed - Not Verified",
+                    accepted=f"The move of '{identifier}' to `{result.file_path}` was accepted",
+                    failure=verification,
+                    note_ref=result.permalink or result.file_path,
+                )
+
             if output_format == "json":
                 return {
                     "moved": True,
@@ -1002,6 +1051,9 @@ move_note("{identifier}", destination_folder="notes")
                     "file_path": result.file_path,
                     "source": identifier,
                     "destination": destination_path,
+                    "verification": (
+                        verification_payload(verification) if verification is not None else None
+                    ),
                 }
 
             # Build success message
@@ -1011,6 +1063,7 @@ move_note("{identifier}", destination_folder="notes")
                 f"📁 **{identifier}** → **{result.file_path}**",
                 f"🔗 Permalink: {result.permalink}",
                 "📊 Database and search index updated",
+                *([verification_line(verification)] if verification is not None else []),
                 "",
                 f"<!-- Project: {active_project.name} -->",
             ]

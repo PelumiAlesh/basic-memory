@@ -114,3 +114,71 @@ fork puts a bearer-token gate in front of them.
   origin, and per-app settings because they are lists and maps.
 - Plain HTTP carries the token in clear text. Keep the server on loopback, or put TLS in front
   of it. For Docker, see [Docker.md](Docker.md).
+
+## Write verification: read the note back
+
+Setting: `verify_writes` (default `true`; env `BASIC_MEMORY_VERIFY_WRITES`).
+
+After the API accepts `write_note`, `edit_note`, `move_note`, or `delete_note`, the tool reads
+the note back before it answers, so an app that is told a note was saved can rely on it.
+
+What is compared:
+
+- The note's body. Frontmatter is dropped, because Basic Memory rewrites it on every write
+  (permalink, provenance), and runs of whitespace are collapsed. Everything else must match
+  exactly: a body with extra text fails just like one with missing text.
+- `write_note` expects the body of the `content` it sent.
+- `edit_note` reads the note just before the edit, applies the same edit to that copy, and
+  expects the result. If another app changed the note between that read and the edit, the
+  check reports `mismatch` instead of guessing.
+- `move_note` expects the note at the new path in the index with the same body. For a local
+  project the new file must match and the old file must be gone. A case-only rename on a
+  case-insensitive disk (the macOS default) is one file, not a leftover. Images, PDFs, and
+  other non-markdown files are checked for presence only.
+- `delete_note` expects the note gone from the index and, for a local project, its file gone
+  from disk.
+
+The index is always read. The file on disk is read only when this process writes the
+project's files: a local project whose configured folder is the folder the API answered with.
+A cloud project, a `--cloud` route, or a hosted app is checked in the index only, and the
+result says so.
+
+| Result | Text output | JSON output |
+| --- | --- | --- |
+| verified | `verification: verified (index and file)`, or `(index only; ...)` | `"verification": {"status": "verified", "disk_checked": true}` |
+| pending | `verification: pending (<why>)` | `{"status": "pending", "detail": "<why>"}` |
+| failed | an error in place of the success message | `{"status": "failed", "reason": "<reason>", "detail": "<what>"}`, plus `"error": "WRITE_VERIFICATION_FAILED"`; `moved` or `deleted` is `false` |
+
+`delete_note` text output stays a bare `True` when the delete is confirmed.
+
+Failure reasons:
+
+- `missing`: the note is not in the index after a write or move.
+- `truncated`: the stored body is a cut-short copy of the expected one.
+- `duplicated`: the text this call wrote appears more times than it should, at any length.
+- `mismatch`: any other difference, including an edit that raced another app, or a move
+  indexed at a different path.
+- `empty`: the body would be empty (see Limits).
+- `file_missing`, `file_differs`: the file on disk is gone or does not match the index. The
+  detail names the file write status and its last error.
+- `still_indexed`, `file_remains`: a delete that did not take. A file left on disk would put
+  the note back in the index on the next sync.
+- `source_remains`: a move that left the old file, so the note now exists twice on disk.
+
+Pending means the write was accepted but not confirmed: the file writer had not finished
+within 5 seconds, or reading the note back failed with anything other than "not found". A
+read error is never reported as a failed write, because a retry could apply the write twice.
+
+Limits:
+
+- A body that is empty after the call is never reported as verified: an empty body is also
+  what a write that lost everything looks like. That includes a metadata-only `edit_note` on a
+  note with no body.
+- Frontmatter is not checked. A metadata-only edit is verified only for leaving the body alone.
+- Directory moves and deletes (`is_directory=True`) are not read back. Their results already
+  list every file that failed.
+- The check costs one read after each write, and for `edit_note` one more before it. With
+  `verify_writes` off the tools answer as upstream does, and JSON output has
+  `"verification": null`.
+- The 5-second wait covers this process's own file writer. If another app changes the note
+  between the write and the read-back, the check fails even though this call's write landed.

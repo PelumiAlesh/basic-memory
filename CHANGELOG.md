@@ -26,6 +26,15 @@
   clientInfo. Tokens are never logged and are masked by `bm config` and dropped from
   `basic_memory_diagnostics`. Docker and docker-compose now need
   `BASIC_MEMORY_MCP_HTTP_TOKEN` and publish on loopback. Stdio is unchanged.
+- MCP `write_note`, `edit_note`, `move_note`, and `delete_note` read the note back before
+  reporting success. The body (frontmatter dropped, whitespace collapsed) must equal what
+  the call should have produced, in the index and, for a local project, in the file on
+  disk; a move must leave no old file and a delete no file. A failed check turns the call
+  into an error: text output says what went wrong, JSON output carries `verification` and
+  `error: WRITE_VERIFICATION_FAILED`, and `moved`/`deleted` are false. A file still being
+  written after 5 seconds is reported as pending. An empty body is never reported as
+  verified. Directory moves and deletes are not read back. Setting: `verify_writes`
+  (default `true`).
 
 ### Features
 

@@ -33,6 +33,15 @@ from basic_memory.schemas.search import (
 )
 from basic_memory.shared_memory.clients import request_client
 from basic_memory.shared_memory.provenance import provenance_stamp
+from basic_memory.shared_memory.verification import (
+    Failed,
+    Verification,
+    local_project_root,
+    verification_failure_text,
+    verification_line,
+    verification_payload,
+    verify_saved_note,
+)
 from basic_memory.utils import (
     build_qualified_permalink_reference,
     coerce_dict,
@@ -321,6 +330,8 @@ async def write_note(
         - Tags if present
         - Closest existing notes when the note was created and the project's server has
           semantic search enabled, so an accidental near-duplicate can be merged instead of kept
+        - A verification line: the note was read back from the index (and its file, for a
+          local project). A note that does not read back as sent returns an error instead.
         - Session tracking metadata for project awareness
 
     Examples:
@@ -492,6 +503,44 @@ async def write_note(
                     raise ToolError(message)
                 case _:
                     assert_never(outcome)
+            # --- Read-back verification ---
+            # Trigger: verify_writes is on (the default).
+            # Why: an accepted write is not proof the note holds what was sent. Agents
+            #      have reported notes as saved that were cut short, doubled, or never
+            #      reached the file.
+            # Outcome: a note that does not read back as sent turns this call into an
+            #          error; a file still being written is reported as pending.
+            verification: Verification | None = None
+            config = ConfigManager().config
+            if config.verify_writes:
+                verification = await verify_saved_note(
+                    knowledge_client,
+                    result.external_id,
+                    expected_markdown=content,
+                    inserted=content,
+                    local_root=local_project_root(active_project, config),
+                )
+            if isinstance(verification, Failed):
+                logger.warning(
+                    f"write_note verification failed project={active_project.name} "
+                    f"file_path={result.file_path} reason={verification.reason}"
+                )
+                if output_format == "json":
+                    return {
+                        "title": result.title,
+                        "permalink": result.permalink,
+                        "file_path": result.file_path,
+                        "checksum": result.file_checksum,
+                        "action": action.lower(),
+                        "verification": verification_payload(verification),
+                        "error": "WRITE_VERIFICATION_FAILED",
+                    }
+                return verification_failure_text(
+                    "Error: Write not verified",
+                    accepted=f"The write to `{result.file_path}` was accepted",
+                    failure=verification,
+                    note_ref=result.permalink or result.file_path,
+                )
             # --- Similar-note advisory ---
             # Trigger: the note was created (not updated).
             # Why: agents writing across sessions know the topic but not whether a note on
@@ -559,6 +608,8 @@ async def write_note(
                 f"permalink: {response_permalink}",
                 f"checksum: {result.file_checksum[:8] if result.file_checksum else 'unknown'}",
             ]
+            if verification is not None:
+                summary.append(verification_line(verification))
 
             # Count observations by category
             categories = {}
@@ -608,6 +659,9 @@ async def write_note(
                     "checksum": result.file_checksum,
                     "action": action.lower(),
                     "similar_notes": [dataclasses.asdict(note) for note in similar_notes],
+                    "verification": (
+                        verification_payload(verification) if verification is not None else None
+                    ),
                 }
 
             summary_result = "\n".join(summary)

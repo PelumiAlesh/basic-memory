@@ -791,6 +791,16 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After MCP write_note, edit_note, move_note, and delete_note, read the note "
+            "back from the index and, for local projects, from disk, and report a write "
+            "that did not land as requested as an error. "
+            "Env: BASIC_MEMORY_VERIFY_WRITES"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

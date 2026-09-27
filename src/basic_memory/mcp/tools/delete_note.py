@@ -14,6 +14,16 @@ from basic_memory.mcp.project_context import (
 )
 from basic_memory.mcp.server import mcp
 from basic_memory.schemas.project_info import ProjectItem
+from basic_memory.shared_memory.verification import (
+    Failed,
+    Pending,
+    Verification,
+    local_project_root,
+    verification_failure_text,
+    verification_line,
+    verification_payload,
+    verify_deleted_note,
+)
 from basic_memory.utils import generate_permalink, normalize_project_reference
 from basic_memory.workspace_context import current_workspace_permalink_context
 
@@ -232,6 +242,9 @@ async def delete_note(
 
     Returns:
         True if note was successfully deleted, False if note was not found.
+        A deleted note is read back first: True means it is gone from the index and, for
+        a local project, from disk. A delete that cannot be confirmed yet returns a short
+        note saying so; one that did not take returns an error.
         For directories, returns a formatted summary of deleted files.
         On errors, returns a formatted string with helpful troubleshooting guidance.
 
@@ -422,10 +435,12 @@ delete_note("path/to/file.md")
         note_title = None
         note_permalink = None
         note_file_path = None
+        config = ConfigManager().config
         try:
             # Resolve identifier to entity ID
             entity_id = await knowledge_client.resolve_entity(target_identifier, strict=True)
-            if output_format == "json":
+            # The read-back check after the delete needs the note's file path.
+            if output_format == "json" or config.verify_writes:
                 entity = await knowledge_client.get_entity(entity_id)
                 note_title = entity.title
                 note_permalink = entity.permalink
@@ -466,13 +481,61 @@ delete_note("path/to/file.md")
                 logger.info(
                     f"Successfully deleted note: {identifier} in project: {active_project.name}"
                 )
+
+                # --- Read-back verification ---
+                # Trigger: verify_writes is on (the default).
+                # Why: a local file left on disk puts the note back in the index on the
+                #      next sync, so "deleted" would not stay true.
+                # Outcome: a delete that does not read back as gone turns this call into
+                #          an error with deleted: False.
+                verification: Verification | None = None
+                if config.verify_writes:
+                    assert note_file_path is not None, "fetched above when verify_writes is on"
+                    verification = await verify_deleted_note(
+                        knowledge_client,
+                        entity_id,
+                        file_path=note_file_path,
+                        local_root=local_project_root(active_project, config),
+                    )
+                if isinstance(verification, Failed):
+                    logger.warning(
+                        f"delete_note verification failed project={active_project.name} "
+                        f"file_path={note_file_path} reason={verification.reason}"
+                    )
+                    if output_format == "json":
+                        return {
+                            "deleted": False,
+                            "title": note_title,
+                            "permalink": note_permalink,
+                            "file_path": note_file_path,
+                            "verification": verification_payload(verification),
+                            "error": "WRITE_VERIFICATION_FAILED",
+                        }
+                    return verification_failure_text(
+                        "Delete Failed - Not Verified",
+                        accepted=f"The delete of `{note_file_path}` was accepted",
+                        failure=verification,
+                        note_ref=note_permalink or note_file_path or identifier,
+                    )
+
                 if output_format == "json":
                     return {
                         "deleted": True,
                         "title": note_title,
                         "permalink": note_permalink,
                         "file_path": note_file_path,
+                        "verification": (
+                            verification_payload(verification) if verification is not None else None
+                        ),
                     }
+                # Text output stays a bare True when the delete is confirmed or unchecked;
+                # an unconfirmed one says so instead of claiming success.
+                if isinstance(verification, Pending):
+                    return (
+                        f"# Note Deleted - Not Yet Confirmed\n\n"
+                        f"The delete of `{note_file_path}` was accepted.\n\n"
+                        f"{verification_line(verification)}"
+                    )
                 return True
             else:
                 logger.warning(  # pragma: no cover

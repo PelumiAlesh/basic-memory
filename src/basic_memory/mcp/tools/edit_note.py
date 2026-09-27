@@ -36,6 +36,16 @@ from basic_memory.schemas.base import Entity
 from basic_memory.schemas.response import EntityResponse
 from basic_memory.shared_memory.clients import request_client
 from basic_memory.shared_memory.provenance import provenance_stamp
+from basic_memory.shared_memory.verification import (
+    Failed,
+    Verification,
+    local_project_root,
+    replay_edit,
+    verification_failure_text,
+    verification_line,
+    verification_payload,
+    verify_saved_note,
+)
 from basic_memory.services.link_resolver import (
     detect_project_from_workspace_identifier_prefix,
     is_workspace_qualified_plain_identifier,
@@ -660,6 +670,9 @@ async def edit_note(
                 file_created = False
                 entity_id = ""
                 result: EntityResponse | None = None
+                verify_writes = ConfigManager().config.verify_writes
+                # What the note should hold afterwards, for the read-back check below.
+                expected_markdown: str | None = None
 
                 # Try to resolve the entity; for append/prepend, create it if not found
                 try:
@@ -764,12 +777,17 @@ async def edit_note(
                         )
                         result = await knowledge_client.create_entity(entity.model_dump())
                         file_created = True
+                        expected_markdown = entity.content
                     else:
                         # find_replace/replace_section require existing content — re-raise
                         raise resolve_error
 
                 # --- Standard edit path (entity already existed) ---
                 if not file_created:
+                    # The read-back check replays the edit on the note as it is now.
+                    before_edit = (
+                        await knowledge_client.get_entity(entity_id) if verify_writes else None
+                    )
                     # Prepare the edit request data
                     edit_data = {
                         "operation": operation,
@@ -790,10 +808,62 @@ async def edit_note(
 
                     # Call the PATCH endpoint
                     result = await knowledge_client.patch_entity(entity_id, edit_data)
+                    if before_edit is not None:
+                        expected_markdown = replay_edit(
+                            before_edit.content or "",
+                            operation=operation,
+                            content=content,
+                            section=section,
+                            find_text=find_text,
+                            expected_replacements=effective_replacements,
+                            replace_subsections=effective_replace_subsections,
+                        )
 
                 # --- Format response ---
                 # result is always set: either by create_entity (auto-create) or patch_entity (edit)
                 assert result is not None
+
+                # --- Read-back verification ---
+                # Trigger: verify_writes is on (the default).
+                # Why: an accepted edit is not proof the note holds its result. Agents have
+                #      reported appends that doubled or dropped the rest of the note.
+                # Outcome: a note that does not read back as the edit should have left it
+                #          turns this call into an error; a file still being written is
+                #          reported as pending.
+                verification: Verification | None = None
+                if verify_writes:
+                    note_id = result.external_id if file_created else entity_id
+                    assert note_id is not None, "v2 create responses carry external_id"
+                    verification = await verify_saved_note(
+                        knowledge_client,
+                        note_id,
+                        expected_markdown=expected_markdown,
+                        inserted=content,
+                        local_root=local_project_root(active_project, ConfigManager().config),
+                    )
+                if isinstance(verification, Failed):
+                    logger.warning(
+                        f"edit_note verification failed project={active_project.name} "
+                        f"file_path={result.file_path} reason={verification.reason}"
+                    )
+                    if output_format == "json":
+                        return {
+                            "title": result.title,
+                            "permalink": result.permalink,
+                            "file_path": result.file_path,
+                            "checksum": result.checksum,
+                            "operation": operation,
+                            "fileCreated": file_created,
+                            "verification": verification_payload(verification),
+                            "error": "WRITE_VERIFICATION_FAILED",
+                        }
+                    return verification_failure_text(
+                        "Edit Failed - Not Verified",
+                        accepted=f"The {operation} on `{result.file_path}` was accepted",
+                        failure=verification,
+                        note_ref=result.permalink or result.file_path,
+                    )
+
                 if file_created:
                     summary = [
                         f"# Created note ({operation})",
@@ -831,6 +901,8 @@ async def edit_note(
                         summary.append(f"operation: Inserted content before section '{section}'")
                     elif operation == "insert_after_section":
                         summary.append(f"operation: Inserted content after section '{section}'")
+                if verification is not None:
+                    summary.append(verification_line(verification))
 
                 # Count observations by category (reuse logic from write_note)
                 categories = {}
@@ -870,6 +942,9 @@ async def edit_note(
                         "checksum": result.checksum,
                         "operation": operation,
                         "fileCreated": file_created,
+                        "verification": (
+                            verification_payload(verification) if verification is not None else None
+                        ),
                     }
 
                 summary_result = "\n".join(summary)
