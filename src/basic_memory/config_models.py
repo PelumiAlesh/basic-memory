@@ -824,6 +824,26 @@ class BasicMemoryConfig(BaseSettings):
         gt=0,
     )
 
+    review_inbox_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, MCP-created notes are marked unreviewed or placed in the inbox folder. "
+            "Existing notes are left alone. Env: BASIC_MEMORY_REVIEW_INBOX_ENABLED"
+        ),
+    )
+    review_inbox_mode: Literal["status", "folder"] = Field(
+        default="status",
+        description=(
+            "status sets frontmatter status: unreviewed on create. "
+            "folder writes notes with an empty directory into review_inbox_folder. "
+            "Env: BASIC_MEMORY_REVIEW_INBOX_MODE"
+        ),
+    )
+    review_inbox_folder: str = Field(
+        default="inbox",
+        description="Folder used when review_inbox_mode is folder. Env: BASIC_MEMORY_REVIEW_INBOX_FOLDER",
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

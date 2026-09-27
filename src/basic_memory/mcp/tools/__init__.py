@@ -13,6 +13,7 @@ from basic_memory.mcp.tools.read_content import read_content
 from basic_memory.mcp.tools.build_context import build_context
 from basic_memory.mcp.tools.recent_activity import recent_activity
 from basic_memory.mcp.tools.read_note import read_note
+from basic_memory.mcp.tools.review_tools import review_note, review_queue
 
 # TODO: re-enable once MCP client rendering is working
 # from basic_memory.mcp.tools.ui_sdk import read_note_ui, search_notes_ui
@@ -58,6 +59,8 @@ __all__ = [
     "move_note",
     "read_content",
     "read_note",
+    "review_note",
+    "review_queue",
     # "read_note_ui",
     "recent_activity",
     "schema_diff",
