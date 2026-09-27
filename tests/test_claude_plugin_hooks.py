@@ -23,7 +23,9 @@ _version_match = re.search(
     re.MULTILINE,
 )
 assert _version_match is not None, "no __version__ in src/basic_memory/__init__.py"
-CURRENT_VERSION = _version_match.group(1)
+# PEP 440 forbids a local label (the fork's +pelumi.N) in a >= floor, so the
+# floor can only name the public release.
+CURRENT_VERSION = _version_match.group(1).split("+")[0]
 
 # (plugin hooks dir, plugin-root template variable the harness substitutes)
 PLUGINS = [
