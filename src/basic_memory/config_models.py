@@ -872,6 +872,15 @@ class BasicMemoryConfig(BaseSettings):
         ),
         gt=0,
     )
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After write_note, edit_note, move_note, and delete_note, read the note back "
+            "from the index and from disk and report verified, pending, or failed. "
+            "Env: BASIC_MEMORY_VERIFY_WRITES"
+        ),
+    )
+
     git_autocommit: bool = Field(
         default=False,
         description=(
@@ -888,8 +897,10 @@ class BasicMemoryConfig(BaseSettings):
     git_auto_push: bool = Field(
         default=False,
         description=(
-            "Push after an agent commit or undo. Does nothing when the repository "
-            "has no remote. Env: BASIC_MEMORY_GIT_AUTO_PUSH"
+            "Push after a post-write agent commit or undo. Off by default: note "
+            "content never leaves the machine unless this is set and the repository "
+            "has a remote. Pre-write snapshots are never pushed. "
+            "Env: BASIC_MEMORY_GIT_AUTO_PUSH"
         ),
     )
 
