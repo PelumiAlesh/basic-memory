@@ -1,5 +1,6 @@
 """Edit note tool for Basic Memory MCP server."""
 
+from pathlib import Path
 from typing import Any, TYPE_CHECKING, Annotated, Literal, Optional
 
 import frontmatter
@@ -14,6 +15,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from basic_memory.mcp.clients import KnowledgeClient
 
 from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.git_sync import GitMemoryError, schedule_autocommit
 from basic_memory.shared_memory.provenance import stamp_provenance
 from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
 from basic_memory.file_utils import (
@@ -863,6 +865,24 @@ async def edit_note(
                     f"relations_count={len(result.relations)} "
                     f"file_created={str(file_created).lower()}"
                 )
+
+                if (
+                    ConfigManager().config.git_autocommit
+                    and active_project.home
+                    and result.file_path
+                ):
+                    try:
+                        schedule_autocommit(
+                            Path(active_project.home),
+                            result.file_path,
+                            client=current_client_slug(),
+                            note=result.title,
+                            enabled=True,
+                            debounce_seconds=ConfigManager().config.git_autocommit_debounce_seconds,
+                            auto_push=ConfigManager().config.git_auto_push,
+                        )
+                    except GitMemoryError as exc:
+                        logger.warning(f"git autocommit skipped: {exc}")
 
                 if output_format == "json":
                     return {
