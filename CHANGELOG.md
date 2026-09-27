@@ -4,11 +4,13 @@
 
 ### Features
 
-- MCP HTTP and SSE transports check Host and Origin on every request
-  (FastMCP's guard in strict mode). The Host must be loopback, the bound
-  address, or a name in `mcp_http_allowed_hosts` (421 otherwise); a browser
-  Origin must be same-origin, loopback, or in `mcp_http_allowed_origins`
-  (403 otherwise). A tunnel hostname belongs in `mcp_http_allowed_hosts`.
+- `get_brief(project, token_budget)` and the `memory://_brief/{project}` resource
+  return a bounded briefing for clients without hooks: the profile note
+  (`brief_profile_note`, default `me/profile`), the current-state note
+  (`brief_state_note`, default `project/state`), decisions from the last
+  `brief_decision_days` (default 14), open-question and unreviewed counts, and
+  notes updated in the last seven days. The default budget is
+  `brief_token_budget` (1500). Later sections are dropped first.
 
 - MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
   or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or
