@@ -61,6 +61,8 @@ DEFAULT_IGNORE_PATTERNS = {
     "desktop.ini",
     # Obsidian
     ".obsidian",
+    # Local usage log (fork)
+    ".bm-logs",
     # Temporary files
     "*.tmp",
     "*.swp",

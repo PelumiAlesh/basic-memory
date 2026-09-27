@@ -1,0 +1,5 @@
+{
+  "session_id": "claude-session-abc",
+  "cwd": "/tmp/project",
+  "hook_event_name": "Stop"
+}

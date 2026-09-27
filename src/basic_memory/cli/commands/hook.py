@@ -1706,3 +1706,6 @@ def status(
     )
     typer.echo(f"basic-memory version: {basic_memory.__version__}")
     typer.echo(f"uv: {_uv_version() or '(not found)'}")
+
+
+from basic_memory.cli.commands import usage_log_hooks as _usage_log_hooks  # noqa: F401, E402

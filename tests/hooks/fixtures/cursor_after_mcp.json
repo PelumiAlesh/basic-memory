@@ -1,0 +1,6 @@
+{
+  "conversation_id": "cursor-conv-123",
+  "tool_name": "search_notes",
+  "server": "basic-memory",
+  "duration_ms": 42
+}
