@@ -48,5 +48,7 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD basic-memory --version || exit 1
 
-# Use the basic-memory entrypoint to run the MCP server with default SSE transport
+# Use the basic-memory entrypoint to run the MCP server with default SSE transport.
+# The container binds 0.0.0.0 so the published port reaches it. The server refuses to
+# start unless BASIC_MEMORY_MCP_HTTP_TOKEN is passed at run time; never bake it in here.
 CMD ["basic-memory", "mcp", "--transport", "sse", "--host", "0.0.0.0", "--port", "8000"]

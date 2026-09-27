@@ -2,7 +2,7 @@
 
 import os
 import threading
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import typer
 from loguru import logger
@@ -10,6 +10,9 @@ from loguru import logger
 from basic_memory.cli.app import app
 from basic_memory.cli.auto_update import AutoUpdateStatus, run_auto_update
 from basic_memory.config import ConfigManager, init_mcp_logging
+
+if TYPE_CHECKING:  # pragma: no cover
+    from starlette.middleware import Middleware
 
 
 class _DeferredMcpServer:
@@ -26,8 +29,12 @@ mcp_server = _DeferredMcpServer()
 @app.command()
 def mcp(
     transport: str = typer.Option("stdio", help="Transport type: stdio, streamable-http, or sse"),
-    host: str = typer.Option(
-        "0.0.0.0", help="Host for HTTP transports (use 0.0.0.0 to allow external connections)"
+    host: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Host for HTTP transports (default: mcp_http_host, 127.0.0.1). "
+            "Every HTTP request needs a bearer token, whatever the host."
+        ),
     ),
     port: int = typer.Option(8000, help="Port for HTTP transports"),
     path: str = typer.Option("/mcp", help="Path prefix for streamable-http transport"),
@@ -41,12 +48,30 @@ def mcp(
     - streamable-http: Recommended for web deployments
     - sse: Server-Sent Events (for compatibility with existing clients)
 
+    The HTTP transports refuse to start without a bearer token (mcp_http_token or
+    mcp_http_client_tokens) and bind to loopback unless told otherwise.
+
     Initialization, file indexing, and cleanup are handled by the MCP server's lifespan.
 
     Note: This command is available regardless of cloud mode setting.
     Users who have cloud mode enabled can still use local MCP for Claude Code
     and Claude Desktop while using cloud MCP for web and mobile access.
     """
+    # --- HTTP authentication ---
+    # Trigger: an HTTP or SSE transport, which listens on a TCP port.
+    # Why: any process that reaches the port could otherwise read and rewrite notes.
+    # Outcome: no usable bearer token, no server (and no side effects); the message
+    #          says how to set one.
+    http_middleware: list[Middleware] = []
+    if transport in ("streamable-http", "sse"):
+        from basic_memory.shared_memory.http_auth import mcp_http_middleware
+
+        try:
+            http_middleware = mcp_http_middleware(ConfigManager().config)
+        except ValueError as error:
+            typer.echo(f"Error: {error}", err=True)
+            raise typer.Exit(1)
+
     # --- Routing setup ---
     # Trigger: MCP server command invocation.
     # Why: HTTP/SSE transports serve as local API endpoints and must never
@@ -121,8 +146,11 @@ def mcp(
     elif transport == "streamable-http" or transport == "sse":
         mcp_server.run(
             transport=transport,
-            host=host,
+            host=host or ConfigManager().config.mcp_http_host,
             port=port,
             path=path,
             log_level="INFO",
+            middleware=http_middleware,
+            # The strict Host/Origin guard is already in http_middleware.
+            host_origin_protection=False,
         )
