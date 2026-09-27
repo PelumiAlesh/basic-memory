@@ -286,6 +286,10 @@ async def read_content(
 
         logger.debug("Resource metadata", content_type=content_type, size=content_length, path=path)
 
+        from basic_memory.shared_memory.request_client import remember_mcp_client
+
+        await remember_mcp_client(context)
+
         # Handle text or json
         if content_type.startswith("text/") or content_type == "application/json":
             logger.debug("Processing text resource")
@@ -293,6 +297,11 @@ async def read_content(
                 f"MCP tool response: tool=read_content project={active_project.name} "
                 f"path={url} type=text content_type={content_type}"
             )
+            from basic_memory.mcp.privacy_gate import denial_for_markdown
+
+            denial = denial_for_markdown(response.text, url)
+            if denial is not None:
+                return {"type": "error", "error": denial}
             return {
                 "type": "text",
                 "text": response.text,
@@ -302,6 +311,12 @@ async def read_content(
 
         # Handle images
         elif content_type.startswith("image/"):
+            from basic_memory.mcp.privacy_gate import denial_for
+
+            # No frontmatter: missing visibility counts as private when a policy exists.
+            denial = denial_for(None, url)
+            if denial is not None:
+                return {"type": "error", "error": denial}
             logger.debug("Processing image")
             img = PILImage.open(io.BytesIO(response.content))
             img_bytes = optimize_image(img, content_length)
@@ -321,6 +336,11 @@ async def read_content(
 
         # Handle other file types
         else:
+            from basic_memory.mcp.privacy_gate import denial_for
+
+            denial = denial_for(None, url)
+            if denial is not None:
+                return {"type": "error", "error": denial}
             logger.debug(f"Processing binary resource content_type {content_type}")
             if content_length > 350000:  # pragma: no cover
                 logger.warning("Document too large for response", size=content_length)

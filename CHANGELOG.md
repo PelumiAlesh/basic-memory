@@ -4,6 +4,14 @@
 
 ### Features
 
+- Optional search recency weighting (`search_recency_weight`, default 0, so
+  ranking is unchanged). When set, scores blend with an exponential decay
+  (`search_recency_half_life_days`, default 30) inside a bounded candidate
+  window. `bm care` reports notes past `review_by`, notes missing
+  `source_client`, orphans (via `bm orphans`), and files larger than
+  `care_oversized_bytes` (default 100000). `bm doctor` remains the
+  file-to-database check.
+
 - Writing a `decision` or `preference` note returns similar active notes flagged
   `possible conflict` when `conflict_check_on_write` is true (the default).
   Set it false to keep only the existing similar-note hint on create.
