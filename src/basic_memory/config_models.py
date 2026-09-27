@@ -835,6 +835,34 @@ class BasicMemoryConfig(BaseSettings):
             "Env: BASIC_MEMORY_CONFLICT_CHECK_ON_WRITE"
         ),
     )
+    search_recency_weight: float = Field(
+        default=0.0,
+        description=(
+            "Blend search scores with recency. 0 (default) leaves ranking unchanged. "
+            "1 multiplies by an exponential decay with search_recency_half_life_days. "
+            "Applies inside a bounded candidate window, not the whole project. "
+            "Env: BASIC_MEMORY_SEARCH_RECENCY_WEIGHT"
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    search_recency_half_life_days: float = Field(
+        default=30.0,
+        description=(
+            "Age in days at which recency weighting halves a score. "
+            "Env: BASIC_MEMORY_SEARCH_RECENCY_HALF_LIFE_DAYS"
+        ),
+        gt=0,
+    )
+    care_oversized_bytes: int = Field(
+        default=100_000,
+        description=(
+            "bm care flags markdown files larger than this. "
+            "Env: BASIC_MEMORY_CARE_OVERSIZED_BYTES"
+        ),
+        gt=0,
+    )
+
     search_exclude_inactive: bool = Field(
         default=True,
         description=(
