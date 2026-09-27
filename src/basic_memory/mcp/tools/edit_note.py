@@ -1,5 +1,6 @@
 """Edit note tool for Basic Memory MCP server."""
 
+from datetime import datetime, timezone
 from typing import Any, TYPE_CHECKING, Annotated, Literal, Optional
 
 import frontmatter
@@ -33,6 +34,8 @@ from basic_memory.mcp.server import mcp
 from basic_memory.mcp.tools.utils import _extract_response_data, _response_detail_text
 from basic_memory.schemas.base import Entity
 from basic_memory.schemas.response import EntityResponse
+from basic_memory.shared_memory.clients import request_client
+from basic_memory.shared_memory.provenance import provenance_stamp
 from basic_memory.services.link_resolver import (
     detect_project_from_workspace_identifier_prefix,
     is_workspace_qualified_plain_identifier,
@@ -614,6 +617,13 @@ async def edit_note(
                         "metadata values cannot be null (key deletion is not supported): "
                         + ", ".join(null_keys)
                     )
+            # The stamp rides in `metadata`, so the edit merge and the append/prepend
+            # auto-create both write it. Note preparation keeps an existing creator.
+            if ConfigManager().config.record_provenance and (
+                client_name := await request_client(context)
+            ):
+                stamp = provenance_stamp(client_name, datetime.now(timezone.utc))
+                metadata = {**(metadata or {}), **stamp}
 
             # Use the PATCH endpoint to edit the entity
             try:

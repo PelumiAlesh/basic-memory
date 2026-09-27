@@ -3,6 +3,7 @@
 import dataclasses
 import textwrap
 from collections.abc import Sequence
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Annotated, List, Union, Optional, Literal, assert_never
 
 import logfire
@@ -30,6 +31,8 @@ from basic_memory.schemas.search import (
     SearchResult,
     SearchRetrievalMode,
 )
+from basic_memory.shared_memory.clients import request_client
+from basic_memory.shared_memory.provenance import provenance_stamp
 from basic_memory.utils import (
     build_qualified_permalink_reference,
     coerce_dict,
@@ -429,6 +432,11 @@ async def write_note(
                 entity_metadata.update(metadata)
             if tag_list:
                 entity_metadata["tags"] = tag_list
+            # Provenance goes on last so a caller-supplied bm_* value cannot mask it.
+            if ConfigManager().config.record_provenance and (
+                client_name := await request_client(context)
+            ):
+                entity_metadata.update(provenance_stamp(client_name, datetime.now(timezone.utc)))
 
             entity = Entity(
                 title=title,
