@@ -864,6 +864,11 @@ async def edit_note(
                 verification = None
                 if app_config.verify_writes:
                     if file_created:
+                        if not result.external_id:
+                            raise ToolError(
+                                "edit_note created a note but the API returned no external_id; "
+                                "cannot verify the write."
+                            )
                         verification = await verify_note_write(
                             knowledge_client,
                             external_id=result.external_id,
