@@ -117,4 +117,7 @@ fork puts a bearer-token gate in front of them.
 
 ## Session capture (v2)
 
-End-of-session transcript capture stays **off** on the v2 stack until privacy and inbox routing are redesigned. Do not enable ``session_capture_enabled`` in fork deployments.
+Off by default. Opt in with ``bm setup --session-capture``, which sets
+``session_capture_enabled`` in config. Fork stop hooks append **new** turns only
+into a single ``inbox/session-<conversation>.md`` note per harness conversation id,
+with long tool output truncated locally. Nothing is sent to the cloud.
