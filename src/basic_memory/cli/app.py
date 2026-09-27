@@ -149,6 +149,7 @@ def app_callback(
         "workspace",
         # POSIX read verbs (#1404): API-hitting commands that initialize via
         # deps.py, same as status/tool.
+        "brief",
         "cat",
         "grep",
         "ls",

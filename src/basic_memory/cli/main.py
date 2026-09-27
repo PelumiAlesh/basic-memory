@@ -19,6 +19,7 @@ if not _version_only_invocation(sys.argv[1:]):
         ci,
         cloud,
         db,
+        brief,
         doctor,
         hook,
         import_chatgpt,

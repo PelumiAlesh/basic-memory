@@ -640,6 +640,52 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    brief_profile_note: str = Field(
+        default="me/profile",
+        description=(
+            "Permalink or title of the optional profile note included in get_brief when present. "
+            "Env: BASIC_MEMORY_BRIEF_PROFILE_NOTE"
+        ),
+    )
+    brief_state_note: str = Field(
+        default="project/state",
+        description=(
+            "Permalink or title of the current-state note included in get_brief when present. "
+            "Env: BASIC_MEMORY_BRIEF_STATE_NOTE"
+        ),
+    )
+    brief_inbox_folder: str = Field(
+        default="inbox",
+        description=(
+            "Folder whose top-level markdown files are counted in get_brief. "
+            "Env: BASIC_MEMORY_BRIEF_INBOX_FOLDER"
+        ),
+    )
+    brief_decision_days: int = Field(
+        default=14,
+        ge=1,
+        description=(
+            "How many days of decision notes get_brief lists by title. "
+            "Env: BASIC_MEMORY_BRIEF_DECISION_DAYS"
+        ),
+    )
+    brief_token_budget: int = Field(
+        default=1500,
+        ge=1,
+        description=(
+            "Default token budget for get_brief. Roughly four characters per token. "
+            "Env: BASIC_MEMORY_BRIEF_TOKEN_BUDGET"
+        ),
+    )
+    brief_refresh_hours: float = Field(
+        default=24.0,
+        gt=0,
+        description=(
+            "Minimum hours between bm brief deliveries for the same --conversation-id. "
+            "Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
+        ),
+    )
+
     ensure_frontmatter_on_sync: bool = Field(
         default=True,
         description="Ensure markdown files have complete frontmatter during sync by adding derived title and type when missing. Canonical permalinks are always added.",
