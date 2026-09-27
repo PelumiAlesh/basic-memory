@@ -4,6 +4,22 @@
 
 ### Features
 
+- Optional git autocommit (`git_autocommit`, default false). After an MCP write
+  or edit, the note file is committed in the project repository, debounced by
+  `git_autocommit_debounce_seconds` (default 2). The message is
+  `memory(<client>): update <note>`. `bm history <note>` shows that file's
+  log. `bm undo` reverts the last agent commit and refuses any other HEAD or
+  a dirty tree. Nothing is pushed unless `git_auto_push` is true and the
+  repository has a remote.
+
+- Notes can set `visibility: private|work|shareable`. `client_visibility`
+  (empty by default, so nothing is filtered) maps a client slug or bearer-token
+  identity to `deny_visibility` and `deny_path_prefixes`. The check runs on
+  read, search, brief, read_content, the note resource, and build_context.
+  When any policy exists, an unknown client may read only `shareable` notes,
+  and a missing or unrecognized visibility counts as private. A denial returns
+  no note body.
+
 - Optional search recency weighting (`search_recency_weight`, default 0, so
   ranking is unchanged). When set, scores blend with an exponential decay
   (`search_recency_half_life_days`, default 30) inside a bounded candidate

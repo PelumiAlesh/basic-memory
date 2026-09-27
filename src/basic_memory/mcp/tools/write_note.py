@@ -2,6 +2,7 @@
 
 import dataclasses
 import textwrap
+from pathlib import Path
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Annotated, List, Union, Optional, Literal, assert_never
 
@@ -18,6 +19,7 @@ from basic_memory.file_utils import (
     remove_frontmatter,
 )
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
+from basic_memory.shared_memory.git_sync import GitMemoryError, schedule_autocommit
 from basic_memory.shared_memory.conflicts import (
     format_possible_conflicts,
     supersedes_targets,
@@ -685,6 +687,20 @@ async def write_note(
             logger.debug(
                 f"MCP tool response: tool=write_note project={active_project.name} action={action} permalink={response_permalink} observations_count={len(result.observations)} relations_count={len(result.relations)} resolved_relations={resolved} unresolved_relations={unresolved} similar_notes_count={len(similar_notes)}"
             )
+            if app_config.git_autocommit and active_project.home and result.file_path:
+                try:
+                    schedule_autocommit(
+                        Path(active_project.home),
+                        result.file_path,
+                        client=current_client_slug(),
+                        note=result.title,
+                        enabled=True,
+                        debounce_seconds=app_config.git_autocommit_debounce_seconds,
+                        auto_push=app_config.git_auto_push,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git autocommit skipped: {exc}")
+
             if output_format == "json":
                 payload = {
                     "title": result.title,
