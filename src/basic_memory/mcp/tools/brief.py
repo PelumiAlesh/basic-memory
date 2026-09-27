@@ -131,7 +131,12 @@ async def build_brief(
 
 @mcp.tool(
     title="Get Brief",
-    description="Return a short briefing for clients that do not run session hooks.",
+    description=(
+        "Return a short briefing: current state, recent decision titles, an inbox "
+        "file count, and the profile note when those notes exist. Call this at the "
+        "start of a chat that has no brief in context. Cursor does not inject a brief "
+        "when an old chat is resumed."
+    ),
     tags={"navigation", "notes"},
     annotations={
         "title": "Get Brief",

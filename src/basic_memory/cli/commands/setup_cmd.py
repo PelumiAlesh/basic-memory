@@ -13,6 +13,7 @@ import typer
 from basic_memory.cli.app import app
 from basic_memory.cli.commands.hook import _hook_launcher
 from basic_memory.config import ConfigManager, ProjectEntry, ProjectMode
+from basic_memory.config_models import CONFIG_FILE_NAME, resolve_data_dir
 from basic_memory.setup import json_edit, launchd, manifest, paths, tokens
 from basic_memory.setup.hooks import (
     install_claude_hooks,
@@ -79,11 +80,11 @@ def describe_plan(plan: SetupPlan) -> str:
             "Tokens: dedicated fork-mcp-tokens.json (reused on re-run, mode 0600)",
             f"Cursor MCP: {paths.cursor_mcp_path()}",
             f"Claude Desktop MCP: {paths.claude_desktop_mcp_path()}",
-            f"Claude Code settings MCP: {paths.claude_code_settings_path()}",
+            f"Claude Code MCP: {paths.claude_code_mcp_path()} (user scope, not settings.json)",
             f"HTTP MCP URL: http://127.0.0.1:{plan.mcp_port}/mcp",
             f"Launchd: {'install' if plan.install_launchd else 'skip'} ({LAUNCHD_LABEL})",
             f"Session capture: {'on' if plan.session_capture else 'off'}",
-            "Per-turn hooks: Cursor sessionStart/stop + Claude UserPromptSubmit/Stop",
+            "Hooks: Cursor sessionStart (new chats only); Claude Code UserPromptSubmit",
         ]
     )
 
@@ -131,11 +132,18 @@ def _backup_config_if_needed(
 
 
 def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
-    manager = ConfigManager()
-    existing = manifest.load_manifest(manager.config_dir)
+    config_file = plan.config_dir / CONFIG_FILE_NAME
+    existing = manifest.load_manifest(plan.config_dir)
     setup_manifest = existing or manifest.SetupManifest.empty(LAUNCHD_LABEL)
     setup_manifest.session_capture_enabled = plan.session_capture
+    # Trigger: this machine has no config.json yet.
+    # Why: ConfigManager creates a default file on first read, which is not the
+    # user's file. Recording the absence lets uninstall delete that file.
+    # Outcome: a setup that created config.json removes it; an existing file is restored.
+    if not dry_run and not config_file.exists():
+        json_edit.remember_original(setup_manifest, plan.config_dir, config_file)
 
+    manager = ConfigManager()
     fork_tokens = tokens.ensure_tokens(manager.config_dir)
     if not dry_run:
         _backup_config_if_needed(setup_manifest, manager.config_file, manager.config_dir)
@@ -175,7 +183,7 @@ def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
     json_edit.upsert_file(
         setup_manifest,
         manager.config_dir,
-        paths.claude_code_settings_path(),
+        paths.claude_code_mcp_path(),
         lambda data: merge_mcp_servers(data, entry),
         dry_run=dry_run,
     )
@@ -184,8 +192,12 @@ def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
         launcher = _hook_launcher()
         if plan.binary.is_file():
             launcher = str(plan.binary)
-        install_cursor_hooks(launcher)
-        install_claude_hooks(launcher)
+        json_edit.remember_original(setup_manifest, manager.config_dir, paths.cursor_hooks_path())
+        json_edit.remember_original(
+            setup_manifest, manager.config_dir, paths.claude_code_settings_path()
+        )
+        install_cursor_hooks(launcher, session_capture=plan.session_capture)
+        install_claude_hooks(launcher, session_capture=plan.session_capture)
 
         plist_body = launchd.launchd_plist_content(
             plan.binary, plan.mcp_port, LAUNCHD_LABEL, manager.config_dir
@@ -259,12 +271,14 @@ def setup_command(
         typer.echo(f"Error: {error}", err=True)
         raise typer.Exit(1)
 
+    # Resolve the directory without loading config. The first ConfigManager()
+    # call creates config.json, and a dry run must not do that.
     plan = SetupPlan(
         project_name=project,
         project_path=project_path,
         binary=resolved_binary,
         mcp_port=port,
-        config_dir=ConfigManager().config_dir,
+        config_dir=resolve_data_dir(),
         session_capture=session_capture,
         install_launchd=install_launchd,
     )
@@ -282,4 +296,9 @@ def setup_command(
         raise typer.Exit(1)
 
     typer.echo("\nSetup complete.")
-    typer.echo("Cursor brief delivery uses sessionStart (see docs/FORK_SETUP_CURSOR_HOOKS.md).")
+    typer.echo(
+        "Cursor adds the brief only when a new chat is created (sessionStart). "
+        "Reopening an old chat does not run that hook, and beforeSubmitPrompt cannot "
+        "add context. In an old Cursor chat, call get_brief. "
+        "Claude Code adds the brief on UserPromptSubmit, including a resumed session."
+    )

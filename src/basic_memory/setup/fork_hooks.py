@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import sys
 from datetime import datetime, timezone
@@ -66,6 +65,19 @@ def _render_brief_text() -> str:
     return render_brief_for_project(_primary_project())
 
 
+def _log_hook_metadata(name: str, client: str, conversation_id: str) -> None:
+    """Record that a hook ran. The prompt and the brief stay out of the log."""
+    try:
+        from basic_memory.shared_memory.usage_log_fast import append_event_line
+
+        event: dict[str, Any] = {"event": "hook", "name": name, "client": client}
+        if conversation_id:
+            event["conversation_id"] = conversation_id
+        append_event_line(event)
+    except Exception:
+        return
+
+
 def _maybe_record_delivery(conversation_id: str) -> None:
     if not conversation_id:
         return
@@ -91,6 +103,7 @@ def _should_deliver(conversation_id: str) -> bool:
 def run_cursor_session_start() -> None:
     payload = _read_stdin_json()
     conversation_id = _conversation_id(payload)
+    _log_hook_metadata("session-start", "cursor", conversation_id)
     if not _should_deliver(conversation_id):
         print("{}")
         return
@@ -110,14 +123,30 @@ def run_cursor_stop() -> None:
 
 
 def run_claude_user_prompt() -> None:
+    """Inject the brief as UserPromptSubmit additionalContext.
+
+    Claude Code adds plain stdout to context on exit 0, and it also accepts
+    ``hookSpecificOutput.additionalContext``. A top-level ``additionalContext``
+    key is ignored. The nested form is what the current hooks guide shows for
+    this event, and it stays valid when the brief itself contains braces.
+    """
     payload = _read_stdin_json()
     conversation_id = _conversation_id(payload)
-    if _should_deliver(conversation_id):
-        brief = _render_brief_text()
-        _maybe_record_delivery(conversation_id)
-        sys.stdout.write(brief[:10_000])
-        if not brief.endswith("\n"):
-            sys.stdout.write("\n")
+    _log_hook_metadata("prompt-submit", "claude-code", conversation_id)
+    if not _should_deliver(conversation_id):
+        return
+    brief = _render_brief_text()[:10_000]
+    _maybe_record_delivery(conversation_id)
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": brief,
+                }
+            }
+        )
+    )
 
 
 def run_claude_stop() -> None:

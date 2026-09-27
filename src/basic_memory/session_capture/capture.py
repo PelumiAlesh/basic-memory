@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -11,6 +13,16 @@ from basic_memory.config import ConfigManager
 from basic_memory.session_capture.redact import redact_payload
 from basic_memory.session_capture.state import JsonCaptureStateStore, state_path
 from basic_memory.setup.paths import cursor_routing_path, default_vault_path
+
+_TEXT_KEYS = (
+    "prompt",
+    "text",
+    "transcript",
+    "response",
+    "user_message",
+    "assistant_message",
+)
+_SAFE_ID = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _project_path() -> Path:
@@ -22,19 +34,39 @@ def _project_path() -> Path:
     return default_vault_path().expanduser().resolve()
 
 
+def _has_turn_text(payload: dict[str, Any]) -> bool:
+    """True when the payload carries conversation text worth keeping.
+
+    A Cursor stop event is often only ``status`` and ``loop_count``. Writing a
+    note for that creates an inbox file with no turns.
+    """
+    for key in _TEXT_KEYS:
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return True
+    messages = payload.get("messages")
+    return isinstance(messages, list) and len(messages) > 0
+
+
 def _turn_id(payload: dict[str, Any]) -> str:
     for key in ("turn_id", "turnId", "message_id", "messageId"):
         value = payload.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
-    status = payload.get("status")
-    ts = datetime.now(timezone.utc).isoformat()
-    return f"{status or 'stop'}:{ts}"
+    # Same payload twice must not append twice when the harness sends no id.
+    digest = hashlib.sha256(
+        json.dumps(redact_payload(payload), sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return f"content:{digest[:16]}"
 
 
 def _note_path(conversation_id: str) -> Path:
-    safe = conversation_id.replace("/", "_").replace(":", "_")
-    return _project_path() / "inbox" / f"session-{safe}.md"
+    safe = _SAFE_ID.sub("_", conversation_id).strip("._")[:80] or "unknown"
+    root = _project_path()
+    note = (root / "inbox" / f"session-{safe}.md").resolve()
+    if not note.is_relative_to(root.resolve()):
+        raise ValueError("session note path escapes the project")
+    return note
 
 
 def _format_turn(harness: str, turn_id: str, payload: dict[str, Any]) -> str:
@@ -50,6 +82,8 @@ def handle_stop_event(payload: dict[str, Any], *, harness: str, conversation_id:
         return
     config = ConfigManager().config
     if not config.session_capture_enabled:
+        return
+    if not _has_turn_text(payload):
         return
 
     project = _project_path()

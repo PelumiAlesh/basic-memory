@@ -4,10 +4,18 @@
 
 ### Shared memory fork
 
-- `get_brief` / `memory://_brief/{project}` and `bm brief` render a bounded project
+- `get_brief` / `memory://_brief/{project}` and `bm brief` render one bounded project
   briefing: optional profile and current-state excerpts (omitted when missing), open
   decision titles, inbox markdown count, and `brief_refresh_hours` throttling via
-  `<project>/.basic-memory/brief-delivery.json` when `--conversation-id` is set.
+  `<project>/.basic-memory/brief-delivery.json` when `--conversation` (or
+  `--conversation-id`) is set. Setup hooks call that same briefing.
+- `bm setup` writes Claude Code's user MCP server to `~/.claude.json`, keeps hooks in
+  `~/.claude/settings.json`, reuses tokens across runs, and `--uninstall` restores or
+  deletes the files it touched. Cursor `sessionStart` can brief a new chat only.
+  Claude Code `UserPromptSubmit` emits `hookSpecificOutput.additionalContext`.
+- Session capture stays off until `bm setup --session-capture`. Stop hooks are
+  registered only then, and a status-only stop writes no inbox note. Captured text
+  is local and clipped.
 
 - Fork builds identify themselves: `basic-memory --version` and the package metadata
   both report `0.23.2+pelumi.1` (a PEP 440 local label) when installed from

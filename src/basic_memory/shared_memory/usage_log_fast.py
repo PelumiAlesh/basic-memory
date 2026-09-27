@@ -9,7 +9,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +19,8 @@ DIR_MODE = 0o700
 FILE_MODE = 0o600
 _CONFIG_FILE = "config.json"
 _DATA_DIR_NAME = "basic-memory"
+_DEFAULT_RETENTION_DAYS = 90
+_retention_pruned = False
 
 
 def _config_dir() -> Path:
@@ -102,6 +104,37 @@ def daily_log_path(log_dir: Path) -> Path:
     return log_dir / f"events-{day}.jsonl"
 
 
+def configured_retention_days() -> int:
+    """Retention from config, or 90 when the setting is missing or unusable."""
+    path = _config_dir() / _CONFIG_FILE
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        days = int(data.get("usage_log_retention_days", _DEFAULT_RETENTION_DAYS))
+    except (OSError, json.JSONDecodeError, AttributeError, TypeError, ValueError):
+        return _DEFAULT_RETENTION_DAYS
+    return days if days > 0 else _DEFAULT_RETENTION_DAYS
+
+
+def prune_expired_logs(project_home: Path, retention_days: int) -> int:
+    """Delete events-*.jsonl whose filename date is older than retention_days."""
+    if retention_days <= 0:
+        return 0
+    log_dir = project_home / LOG_DIR_NAME
+    if not log_dir.is_dir():
+        return 0
+    cutoff = datetime.now(timezone.utc).date() - timedelta(days=retention_days)
+    removed = 0
+    for path in log_dir.glob("events-*.jsonl"):
+        try:
+            day = datetime.strptime(path.stem.removeprefix("events-"), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if day < cutoff:
+            path.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
 def append_event_line(
     event: dict[str, Any],
     *,
@@ -111,6 +144,11 @@ def append_event_line(
     if not _load_usage_log_enabled():
         return False
     project_home = _project_home(project_dir)
+    global _retention_pruned
+    if not _retention_pruned:
+        # One prune per process. Hook commands are one-shot, so this is each turn.
+        _retention_pruned = True
+        prune_expired_logs(project_home, configured_retention_days())
     log_dir = ensure_log_dir(project_home)
     path = daily_log_path(log_dir)
     payload = dict(event)

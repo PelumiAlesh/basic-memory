@@ -8,8 +8,16 @@ from pathlib import Path
 
 import pytest
 
-from basic_memory.shared_memory.usage_log import BENCHMARK_BOUND_SECONDS, apply_retention, query_hash
-from basic_memory.shared_memory.usage_log_fast import append_event_line, ensure_log_dir
+from basic_memory.shared_memory.usage_log import (
+    BENCHMARK_BOUND_SECONDS,
+    apply_retention,
+    query_hash,
+)
+from basic_memory.shared_memory.usage_log_fast import (
+    append_event_line,
+    configured_retention_days,
+    ensure_log_dir,
+)
 
 
 @pytest.fixture
@@ -46,7 +54,9 @@ def test_append_event_writes_jsonl(project_home: Path) -> None:
     assert "secret" not in files[0].read_text(encoding="utf-8")
 
 
-def test_query_hash_never_stores_raw_query(project_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_query_hash_never_stores_raw_query(
+    project_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(project_home.parent / "cfg"))
     secret = "super-secret search terms"
     digest = query_hash(secret)
@@ -55,6 +65,17 @@ def test_query_hash_never_stores_raw_query(project_home: Path, monkeypatch: pyte
     salt_path = project_home.parent / "cfg" / "usage_log_query_salt"
     assert salt_path.exists()
     assert secret not in salt_path.read_bytes().decode("latin-1", errors="ignore")
+
+
+def test_configured_retention_days_falls_back(project_home: Path, tmp_path: Path) -> None:
+    assert configured_retention_days() == 90
+    cfg = tmp_path / "cfg" / "config.json"
+    cfg.write_text(json.dumps({"usage_log_retention_days": 0}), encoding="utf-8")
+    assert configured_retention_days() == 90
+    cfg.write_text("[]", encoding="utf-8")
+    assert configured_retention_days() == 90
+    cfg.write_text("{", encoding="utf-8")
+    assert configured_retention_days() == 90
 
 
 def test_retention_deletes_old_files(project_home: Path) -> None:

@@ -38,7 +38,16 @@ def claude_desktop_mcp_path() -> Path:
 
 
 def claude_code_settings_path() -> Path:
+    """User settings. Claude Code reads hooks here, not MCP server definitions."""
     return Path.home() / ".claude" / "settings.json"
+
+
+def claude_code_mcp_path() -> Path:
+    """User-scope MCP config. ``claude mcp add --scope user`` writes this file.
+
+    ``mcpServers`` in ``~/.claude/settings.json`` is ignored.
+    """
+    return Path.home() / ".claude.json"
 
 
 def codex_routing_path() -> Path:

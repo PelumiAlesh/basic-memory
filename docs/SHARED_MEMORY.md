@@ -5,7 +5,14 @@ Claude Code, ChatGPT, and Grok Bot. The folder is an Obsidian vault (default
 `~/Documents/AI Memory`) that already has an `inbox/` folder written by the owner's own launchd
 jobs.
 
-Memory content stays on the machine. No feature in this fork sends note content to a remote.
+Fork features write only on this machine: the vault, `.bm-history/`, `.bm-logs/`, and
+`~/.basic-memory/`. They do not open a connection to upload note bodies. Upstream
+`basic-memory cloud push`, `cloud sync`, and `cloud bisync` still upload the vault if
+you run them. Logfire export stays off unless `logfire_enabled` and
+`logfire_send_to_logfire` are both on, and those spans do not attach note bodies or
+search text. Promo analytics sends an event name and the version string to Umami;
+`BASIC_MEMORY_NO_PROMOS=1` turns that off. A client you connect (ChatGPT, for example)
+receives whatever tool result you asked it to fetch.
 
 This page describes only what the fork adds to upstream Basic Memory. Each section names the
 setting that controls the feature and its default.
@@ -142,7 +149,8 @@ it. A note with no `status`, or any other status, is unaffected.
 ## Brief
 
 `get_brief(project, token_budget)` and `memory://_brief/{project}` return a bounded
-orientation for clients that do not run session hooks. `bm brief` prints the same text.
+orientation. `bm brief` and the setup hooks print the same text. There is one
+implementation; the setup command does not keep a second brief.
 
 Settings (env vars use the `BASIC_MEMORY_` prefix):
 
@@ -153,12 +161,27 @@ Settings (env vars use the `BASIC_MEMORY_` prefix):
 - `brief_decision_days` (default `14`) — decision note titles listed by search
 - `brief_token_budget` (default `1500`) — rough character budget (`len / 4`); later
   sections drop first
-- `brief_refresh_hours` (default `24`) — minimum time between `bm brief` deliveries for
-  the same `--conversation-id` (use `--force` to override)
+- `brief_refresh_hours` (default `24`) — minimum time between deliveries for the same
+  conversation (`bm brief --conversation <id>`, or `--conversation-id`; `--force` overrides)
 
-Delivery timestamps for `--conversation-id` are stored in
-`<project>/.basic-memory/brief-delivery.json`. Pass `--delivery-store` to override the path.
-This PR does not install SessionStart hooks; use `bm setup` when that lands in the stack.
+Delivery timestamps are stored in `<project>/.basic-memory/brief-delivery.json`.
+
+`bm setup` wires delivery:
+
+- Claude Code `UserPromptSubmit` prints JSON `hookSpecificOutput.additionalContext`
+  (event name `UserPromptSubmit`). That runs on every prompt, including a resumed
+  session, and injects the brief when the refresh window has elapsed. Official docs
+  also add plain stdout to context on exit 0; the hook prints only the JSON object so
+  the brief is not parsed as a broken decision.
+- Cursor `sessionStart` prints `additional_context`. Cursor's docs say this hook runs
+  when a **new** composer conversation is created, and the text is initial system
+  context. It does not run when you reopen an old chat. `beforeSubmitPrompt` can only
+  return `continue` and `user_message` (a message shown when the prompt is blocked),
+  so setup does not register it.
+- In a resumed Cursor chat the brief is not injected. The `get_brief` tool is available
+  if setup wrote `~/.cursor/mcp.json`. Call it.
+
+See [FORK_SETUP_CURSOR_HOOKS.md](FORK_SETUP_CURSOR_HOOKS.md).
 
 ## Local usage log and `bm stats`
 
@@ -179,7 +202,9 @@ queries or prompts, or bearer tokens. Search queries log only length plus a shor
 (salt file `usage_log_query_salt` in the config dir, mode `0600`).
 
 The long-running MCP server records tool calls through middleware (non-blocking queue, about 1 s
-or 100 events per flush). Per-turn harness hooks use a stdlib-only append path:
+or 100 events per flush). Files named `events-YYYY-MM-DD.jsonl` older than
+`usage_log_retention_days` are deleted when the MCP server starts and on the first append
+of a hook process. Per-turn harness hooks use a stdlib-only append path:
 
 - `bm hook prompt-submit --harness claude|cursor`
 - `bm hook turn-end --harness claude|cursor`
@@ -193,15 +218,32 @@ UserPromptSubmit, Stop, and PostToolUse; tool names arrive as `mcp__basic-memory
 Cursor desktop fixtures include `conversation_id` on beforeSubmitPrompt, stop, and
 afterMCPExecution plus `tool_name` on afterMCPExecution.
 
-**Gaps / fallbacks:** Cursor cloud agents do not fire those hooks. Cursor
-`beforeSubmitPrompt` output is documented as `continue` and `user_message` only, so injecting
-a brief on resume through that hook may be unavailable (use sessionStart or accept inferred
-brief metrics). HTTP clients without hooks (ChatGPT, Grok) get INFERRED session stats from MCP
-logs using a 30-minute idle gap.
+**Cursor coverage:** `sessionStart` fires for a new composer chat, not when a month-old
+chat is reopened. `beforeSubmitPrompt` cannot inject context. Cursor cloud agents do
+not load these hooks. A resumed Cursor chat gets no automatic brief. HTTP clients
+without hooks (ChatGPT, Grok) get INFERRED session stats from MCP logs using a
+30-minute idle gap.
 
 ## Session capture (v2)
 
-Off by default. Opt in with ``bm setup --session-capture``, which sets
-``session_capture_enabled`` in config. Fork stop hooks append **new** turns only
-into a single ``inbox/session-<conversation>.md`` note per harness conversation id,
-with long tool output truncated locally. Nothing is sent to the cloud.
+Off by default (`session_capture_enabled`). `bm setup --session-capture` turns it on
+and only then registers the Cursor `stop` and Claude Code `Stop` hooks. A later
+`bm setup` without that flag removes those hooks.
+
+When a stop payload contains conversation text (`prompt`, `text`, `transcript`,
+`messages`, or a response field), the hook appends that text, clipped, to one local
+note `inbox/session-<id>.md`. Credential-like fields are replaced with `[redacted]`.
+The note is ordinary markdown, so search can find it. A stop that is only a status,
+which is what Cursor's documented stop input is, writes nothing. The same payload
+twice does not append twice. Nothing in this feature is uploaded.
+
+## Setup
+
+`bm setup` is safe to run again. It reuses `~/.basic-memory/fork-mcp-tokens.json` and
+does not mint new tokens. `--uninstall` copies back the files it changed and deletes
+files it created, including a `config.json` that did not exist before.
+
+Claude Code user-scope MCP servers are written to `~/.claude.json` (`mcpServers`),
+which is where `claude mcp add --scope user` writes them. `~/.claude/settings.json`
+receives hooks only. Cursor MCP goes to `~/.cursor/mcp.json`. The hook command is the
+absolute path of the fork binary.

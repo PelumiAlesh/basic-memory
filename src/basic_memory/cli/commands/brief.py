@@ -33,6 +33,24 @@ def _wrap_harness(text: str) -> str:
     return f"{HARNESS_FENCE}\n{text.rstrip()}\n```\n"
 
 
+def render_brief_for_project(project_name: str) -> str:
+    """Render the same text as ``get_brief`` for one project.
+
+    Setup hooks call this so a delivered brief is the bounded project briefing,
+    not the older harness profile placeholder.
+    """
+
+    async def _run() -> str:
+        return await build_brief(
+            project=project_name,
+            project_id=None,
+            token_budget=None,
+            context=None,
+        )
+
+    return run_with_cleanup(_run())
+
+
 def _resolve_project_path(project_name: str) -> Path:
     config = ConfigManager().config
     entry = config.projects.get(project_name)
@@ -47,7 +65,11 @@ def brief_command(
     project: Annotated[Optional[str], typer.Option("--project", "-p", help="Project name")] = None,
     conversation_id: Annotated[
         Optional[str],
-        typer.Option("--conversation-id", help="Track delivery per conversation"),
+        typer.Option(
+            "--conversation",
+            "--conversation-id",
+            help="Track delivery per harness conversation id",
+        ),
     ] = None,
     refresh_hours: Annotated[
         Optional[float],

@@ -68,6 +68,9 @@ def test_run_setup_idempotent_tokens(
     run_setup(plan, dry_run=False)
     second = tokens.load_tokens(bm_home)
     assert second == first
+    hooks = json.loads(paths.cursor_hooks_path().read_text())
+    assert len(hooks["hooks"]["sessionStart"]) == 1
+    assert "stop" not in hooks["hooks"]
 
     token_path = tokens.token_file_path(bm_home)
     assert token_path.is_file()
@@ -104,6 +107,15 @@ def test_run_setup_writes_client_configs(
     hooks = json.loads(paths.cursor_hooks_path().read_text())
     command = hooks["hooks"]["sessionStart"][0]["command"]
     assert SETUP_OWNED_HOOK_RE.search(command)
+    assert "beforeSubmitPrompt" not in hooks["hooks"]
+    assert "stop" in hooks["hooks"]
+
+    claude_mcp = json.loads(paths.claude_code_mcp_path().read_text())
+    assert claude_mcp["mcpServers"]["basic-memory"]["command"] == str(binary)
+    claude_settings = json.loads(paths.claude_code_settings_path().read_text())
+    assert "mcpServers" not in claude_settings
+    assert "UserPromptSubmit" in claude_settings["hooks"]
+    assert "Stop" in claude_settings["hooks"]
 
     config = ConfigManager().config
     assert config.auto_update is False
@@ -162,6 +174,85 @@ def test_setup_cli_dry_run(bm_home: Path, tmp_path: Path) -> None:
     assert result.exit_code == 0
     assert "dry run" in result.stdout
     assert not (tmp_path / "vault").exists()
+
+
+def test_uninstall_restores_created_and_existing_files(
+    bm_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    settings = paths.claude_code_settings_path()
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    original_settings = '{"permissions":{"allow":["Bash"]},"hooks":{}}\n'
+    settings.write_text(original_settings, encoding="utf-8")
+    hooks_path = paths.cursor_hooks_path()
+    hooks_path.parent.mkdir(parents=True, exist_ok=True)
+    original_hooks = '{"version":1,"hooks":{"sessionStart":[{"command":"echo user-hook"}]}}\n'
+    hooks_path.write_text(original_hooks, encoding="utf-8")
+
+    monkeypatch.setattr("basic_memory.setup.launchd.install_launchd", lambda **_: None)
+    monkeypatch.setattr("basic_memory.setup.launchd.uninstall_launchd", lambda *a, **k: None)
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+    )
+    run_setup(plan, dry_run=False)
+    assert paths.claude_code_mcp_path().is_file()
+    assert "basic-memory" in json.loads(paths.claude_code_mcp_path().read_text())["mcpServers"]
+    assert "echo user-hook" in hooks_path.read_text(encoding="utf-8")
+    assert "fork-cursor-session-start" in hooks_path.read_text(encoding="utf-8")
+
+    run_uninstall()
+    assert settings.read_text(encoding="utf-8") == original_settings
+    assert hooks_path.read_text(encoding="utf-8") == original_hooks
+    assert not paths.claude_code_mcp_path().exists()
+    assert not (bm_home / "config.json").exists()
+
+
+def test_claude_user_prompt_emits_additional_context(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from basic_memory.setup.fork_hooks import run_claude_user_prompt
+
+    monkeypatch.setattr(
+        "basic_memory.setup.fork_hooks._read_stdin_json",
+        lambda: {"session_id": "s1", "prompt": "secret prompt"},
+    )
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._should_deliver", lambda _cid: True)
+    monkeypatch.setattr(
+        "basic_memory.setup.fork_hooks._render_brief_text", lambda: "# Brief\n\nhello\n"
+    )
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._maybe_record_delivery", lambda _cid: None)
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._log_hook_metadata", lambda *a, **k: None)
+
+    run_claude_user_prompt()
+    output = capsys.readouterr().out
+    payload = json.loads(output)
+    specific = payload["hookSpecificOutput"]
+    assert specific["hookEventName"] == "UserPromptSubmit"
+    assert "hello" in specific["additionalContext"]
+    assert "additionalContext" not in payload
+    assert "secret prompt" not in output
+
+
+def test_hook_brief_uses_shared_renderer(monkeypatch: pytest.MonkeyPatch) -> None:
+    from basic_memory.setup.fork_hooks import _render_brief_text
+
+    monkeypatch.setattr(
+        "basic_memory.cli.commands.brief.render_brief_for_project",
+        lambda name: f"brief:{name}",
+    )
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._primary_project", lambda: "main")
+    assert _render_brief_text() == "brief:main"
 
 
 def test_resolve_cli_binary_requires_existing_path(tmp_path: Path) -> None:

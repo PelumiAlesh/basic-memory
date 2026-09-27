@@ -22,15 +22,18 @@ def _is_owned_setup_hook(hook: Any) -> bool:
     )
 
 
-def _strip_setup_hooks(groups: list[Any]) -> list[Any]:
+def _strip_flat_owned(entries: list[Any]) -> list[Any]:
+    """Drop setup-owned hooks from Cursor's flat ``hooks.<event>`` list."""
     kept: list[Any] = []
-    for group in groups:
-        if not isinstance(group, dict) or not isinstance(group.get("hooks"), list):
-            kept.append(group)
+    for entry in entries:
+        if _is_owned_setup_hook(entry):
             continue
-        remaining = [hook for hook in group["hooks"] if not _is_owned_setup_hook(hook)]
-        if remaining:
-            kept.append({**group, "hooks": remaining})
+        if isinstance(entry, dict) and isinstance(entry.get("hooks"), list):
+            remaining = [hook for hook in entry["hooks"] if not _is_owned_setup_hook(hook)]
+            if remaining:
+                kept.append({**entry, "hooks": remaining})
+            continue
+        kept.append(entry)
     return kept
 
 
@@ -38,8 +41,13 @@ def _command(launcher: str, verb: str) -> str:
     return f"{launcher} hook {verb}"
 
 
-def cursor_hook_entries(launcher: str) -> dict[str, list[dict[str, Any]]]:
-    """Cursor hooks.json schema (version 1)."""
+def cursor_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, list[dict[str, Any]]]:
+    """Cursor hooks.json schema (version 1): a flat list of ``{command, timeout}``.
+
+    ``beforeSubmitPrompt`` is not installed. Its output cannot add context, and the
+    hook would start this CLI on every send. ``sessionStart`` runs only when a new
+    composer conversation is created.
+    """
 
     def entry(verb: str, timeout: int = 15) -> dict[str, Any]:
         return {
@@ -47,14 +55,20 @@ def cursor_hook_entries(launcher: str) -> dict[str, list[dict[str, Any]]]:
             "timeout": timeout,
         }
 
-    return {
+    entries = {
         "sessionStart": [entry("fork-cursor-session-start", 25)],
-        "beforeSubmitPrompt": [entry("fork-cursor-before-prompt", 10)],
-        "stop": [entry("fork-cursor-stop", 30)],
     }
+    # Trigger: the user opted into session capture.
+    # Why: a Stop hook that is always installed still runs when capture is off.
+    # Outcome: the stop command is registered only while capture is on.
+    if session_capture:
+        entries["stop"] = [entry("fork-cursor-stop", 30)]
+    return entries
 
 
-def claude_hook_entries(launcher: str) -> dict[str, list[dict[str, Any]]]:
+def claude_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, list[dict[str, Any]]]:
+    """Claude Code settings shape: event -> matcher groups -> command hooks."""
+
     def group(verb: str, timeout: int) -> dict[str, Any]:
         return {
             "hooks": [
@@ -66,25 +80,39 @@ def claude_hook_entries(launcher: str) -> dict[str, list[dict[str, Any]]]:
             ]
         }
 
-    return {
+    entries = {
         "UserPromptSubmit": [group("fork-claude-user-prompt", 25)],
-        "Stop": [group("fork-claude-stop", 30)],
     }
+    if session_capture:
+        entries["Stop"] = [group("fork-claude-stop", 30)]
+    return entries
 
 
-def install_cursor_hooks(launcher: str) -> None:
+def install_cursor_hooks(launcher: str, *, session_capture: bool) -> None:
     path = cursor_hooks_path()
     data = _load_hook_config(path) if path.exists() else {"version": 1, "hooks": {}}
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError(f"{path}: hooks must be an object")
-    for event, entries in cursor_hook_entries(launcher).items():
+    desired = cursor_hook_entries(launcher, session_capture=session_capture)
+    # Re-runs replace our events. A capture stop hook from an earlier run is removed
+    # when this run has capture off, without touching anyone else's commands.
+    for event in ("sessionStart", "beforeSubmitPrompt", "stop"):
         existing = hooks.get(event)
-        if existing is not None and not isinstance(existing, list):
+        if existing is None:
+            continue
+        if not isinstance(existing, list):
             raise ValueError(f"{path}: hooks.{event} must be a list")
-        merged = _strip_setup_hooks(existing or [])
-        merged.extend(entries)
-        hooks[event] = merged
+        stripped = _strip_flat_owned(existing)
+        if event in desired:
+            stripped.extend(desired[event])
+        if stripped:
+            hooks[event] = stripped
+        else:
+            del hooks[event]
+    for event, entries in desired.items():
+        if event not in hooks:
+            hooks[event] = list(entries)
     data["version"] = 1
     _write_hook_config(path, data)
 
@@ -102,7 +130,7 @@ def remove_cursor_hooks() -> None:
         groups = hooks[event]
         if not isinstance(groups, list):
             continue
-        stripped = _strip_setup_hooks(groups)
+        stripped = _strip_flat_owned(groups)
         if stripped != groups:
             changed = True
             if stripped:
@@ -113,19 +141,29 @@ def remove_cursor_hooks() -> None:
         _write_hook_config(path, data)
 
 
-def install_claude_hooks(launcher: str) -> None:
+def install_claude_hooks(launcher: str, *, session_capture: bool) -> None:
     path = claude_code_settings_path()
     data = _load_hook_config(path)
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError(f"{path}: hooks must be an object")
-    for event, groups in claude_hook_entries(launcher).items():
+    desired = claude_hook_entries(launcher, session_capture=session_capture)
+    for event in ("UserPromptSubmit", "Stop"):
         existing = hooks.get(event)
-        if existing is not None and not isinstance(existing, list):
+        if existing is None:
+            continue
+        if not isinstance(existing, list):
             raise ValueError(f"{path}: hooks.{event} must be a list")
-        merged = _strip_owned_claude(existing or [])
-        merged.extend(groups)
-        hooks[event] = merged
+        stripped = _strip_owned_claude(existing)
+        if event in desired:
+            stripped.extend(desired[event])
+        if stripped:
+            hooks[event] = stripped
+        else:
+            del hooks[event]
+    for event, groups in desired.items():
+        if event not in hooks:
+            hooks[event] = list(groups)
     _write_hook_config(path, data)
 
 

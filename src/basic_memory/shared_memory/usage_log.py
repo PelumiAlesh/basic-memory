@@ -14,7 +14,7 @@ import secrets
 import threading
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, override
 
@@ -27,9 +27,9 @@ from basic_memory.config_models import CONFIG_FILE_MODE, resolve_data_dir
 from basic_memory.shared_memory.clients import request_client
 from basic_memory.shared_memory.usage_log_fast import (
     FILE_MODE,
-    LOG_DIR_NAME,
     daily_log_path,
     ensure_log_dir,
+    prune_expired_logs,
 )
 
 SALT_FILE_NAME = "usage_log_query_salt"
@@ -262,23 +262,7 @@ def log_usage_event(
 
 def apply_retention(project_home: Path, retention_days: int) -> int:
     """Delete events-*.jsonl older than retention_days. Returns files removed."""
-    if retention_days <= 0:
-        return 0
-    log_dir = project_home / LOG_DIR_NAME
-    if not log_dir.is_dir():
-        return 0
-    cutoff = datetime.now(timezone.utc).date() - timedelta(days=retention_days)
-    removed = 0
-    for path in log_dir.glob("events-*.jsonl"):
-        try:
-            day_str = path.stem.removeprefix("events-")
-            day = datetime.strptime(day_str, "%Y-%m-%d").date()
-        except ValueError:
-            continue
-        if day < cutoff:
-            path.unlink(missing_ok=True)
-            removed += 1
-    return removed
+    return prune_expired_logs(project_home, retention_days)
 
 
 def maybe_apply_retention() -> None:

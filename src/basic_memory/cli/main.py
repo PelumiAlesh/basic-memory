@@ -18,8 +18,8 @@ if not _version_only_invocation(sys.argv[1:]):
     from basic_memory.cli.commands import (  # noqa: F401  # pragma: no cover
         ci,
         cloud,
-        db,
         brief,
+        db,
         doctor,
         hook,
         import_chatgpt,
@@ -34,7 +34,6 @@ if not _version_only_invocation(sys.argv[1:]):
         orphans,
         posix,
         project,
-        brief,
         schema,
         setup_cmd,
         stats,

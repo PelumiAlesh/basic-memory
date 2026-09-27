@@ -30,6 +30,17 @@ def backup_file(path: Path, config_dir: Path) -> str | None:
     return str(backup_path)
 
 
+def remember_original(manifest: SetupManifest, config_dir: Path, path: Path) -> None:
+    """Record a file's bytes before the first edit so uninstall can put them back.
+
+    A path that did not exist is recorded with no backup. Uninstall deletes it.
+    """
+    if any(item.path == str(path) for item in manifest.files):
+        return
+    backup = backup_file(path, config_dir) if path.exists() else None
+    manifest.files.append(FileRecord(path=str(path), backup=backup))
+
+
 def upsert_file(
     manifest: SetupManifest,
     config_dir: Path,
@@ -45,10 +56,7 @@ def upsert_file(
         return False
     if dry_run:
         return True
-    existing = next((item for item in manifest.files if item.path == str(path)), None)
-    if existing is None and path.exists():
-        backup = backup_file(path, config_dir)
-        manifest.files.append(FileRecord(path=str(path), backup=backup))
+    remember_original(manifest, config_dir, path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(after, indent=2) + "\n", encoding="utf-8")
     return True
