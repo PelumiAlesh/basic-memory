@@ -288,6 +288,7 @@ class SearchRepositoryBase(ABC):
         *,
         candidate_keys: Sequence[SearchIndexKey] | None = None,
         trace: SearchTraceCollector | None = None,
+        exclude_statuses: tuple[str, ...] | None = None,
     ) -> List[SearchIndexRow]:
         """Search this repository's project.
 
@@ -309,6 +310,7 @@ class SearchRepositoryBase(ABC):
             temporal=temporal,
             retrieval_mode=retrieval_mode,
             min_similarity=min_similarity,
+            exclude_statuses=exclude_statuses,
         )
         reader = await self._reader_for(query)
         return await reader.search(
@@ -337,6 +339,8 @@ class SearchRepositoryBase(ABC):
         retrieval_mode: SearchRetrievalMode = SearchRetrievalMode.FTS,
         min_similarity: Optional[float] = None,
         allow_relaxed: bool = False,
+        *,
+        exclude_statuses: tuple[str, ...] | None = None,
     ) -> int:
         """Count full-text matches with the same filters as ``search``."""
         query = PreparedSearchQuery(
@@ -353,6 +357,7 @@ class SearchRepositoryBase(ABC):
             temporal=temporal,
             retrieval_mode=retrieval_mode,
             min_similarity=min_similarity,
+            exclude_statuses=exclude_statuses,
         )
         return await SearchReader(self.scope, self._fts).count(query, allow_relaxed=allow_relaxed)
 

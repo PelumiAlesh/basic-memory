@@ -129,6 +129,7 @@ def describe_search_criteria(prepared: PreparedSearchQuery) -> str:
         "metadata_filters": dict(prepared.metadata_filters) if prepared.metadata_filters else None,
         "file_path_prefix": quoted(prepared.file_path_prefix),
         "temporal": _describe_temporal_criteria(prepared.temporal),
+        "exclude_statuses": list(prepared.exclude_statuses) if prepared.exclude_statuses else None,
     }
     return " ".join(f"{name}={value}" for name, value in criteria.items() if value is not None)
 
@@ -194,6 +195,7 @@ def prepare_search_query(query: SearchQuery) -> PreparedSearchQuery | None:
         temporal=build_temporal_filter(query),
         retrieval_mode=query.retrieval_mode or SearchRetrievalMode.FTS,
         min_similarity=query.min_similarity,
+        exclude_statuses=tuple(query.exclude_statuses) if query.exclude_statuses else None,
     )
 
     has_criteria = bool(
@@ -336,6 +338,7 @@ class SearchService:
             or prepared.after_date
             or prepared.file_path_prefix
             or prepared.temporal
+            or prepared.exclude_statuses
         )
 
     async def _include_legacy_note_type_spellings(
@@ -382,6 +385,7 @@ class SearchService:
                 offset=offset,
                 allow_relaxed=allow_relaxed,
                 session=session,
+                exclude_statuses=prepared.exclude_statuses,
             )
         return await self.repository.search(
             search_text=search_text,
@@ -402,6 +406,7 @@ class SearchService:
             allow_relaxed=allow_relaxed,
             session=session,
             trace=trace,
+            exclude_statuses=prepared.exclude_statuses,
         )
 
     async def _count_repository(
@@ -426,6 +431,7 @@ class SearchService:
             retrieval_mode=prepared.retrieval_mode,
             min_similarity=prepared.min_similarity,
             allow_relaxed=allow_relaxed,
+            exclude_statuses=prepared.exclude_statuses,
         )
 
     async def search(
