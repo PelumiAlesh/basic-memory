@@ -746,6 +746,15 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After MCP write_note, edit_note, move_note, and delete_note, read the "
+            "accepted note back from the index and from disk when the project is local. "
+            "Env: BASIC_MEMORY_VERIFY_WRITES"
+        ),
+    )
+
     mcp_http_host: str = Field(
         default="127.0.0.1",
         description=(

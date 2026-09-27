@@ -26,6 +26,10 @@
   clientInfo. Tokens are never logged and are masked by `bm config` and dropped from
   `basic_memory_diagnostics`. Docker and docker-compose now need
   `BASIC_MEMORY_MCP_HTTP_TOKEN` and publish on loopback. Stdio is unchanged.
+- MCP writes copy existing note files into `<project>/.bm-history/` before overwrites,
+  edits, moves, and deletes; a snapshot failure aborts the tool call. After each write,
+  `write_note`, `edit_note`, `move_note`, and `delete_note` read the note back from the
+  index and from disk when the project is local (`verify_writes`, default `true`).
 
 ### Features
 

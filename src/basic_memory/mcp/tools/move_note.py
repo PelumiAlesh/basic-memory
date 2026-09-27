@@ -10,8 +10,10 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
+from basic_memory.mcp.write_verification import verify_note_move
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
+from basic_memory.shared_memory.write_safety import snapshot_local_note
 from basic_memory.schemas.project_info import ProjectItem
 from basic_memory.utils import (
     generate_permalink,
@@ -934,6 +936,11 @@ move_note("{identifier}", destination_folder="notes")
             # Resolve identifier only if earlier checks could not.
             resolved_entity_id = await _ensure_resolved_entity_id()
 
+            if source_entity is None:
+                source_entity = await knowledge_client.get_entity(resolved_entity_id)
+            source_path = source_entity.file_path
+            snapshot_local_note(active_project.home, source_path)
+
             # Call the move API using KnowledgeClient
             result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
 
@@ -994,8 +1001,18 @@ move_note("{identifier}", destination_folder="notes")
                     ```
                     """).strip()
 
+            verification = None
+            if ConfigManager().config.verify_writes:
+                verification = await verify_note_move(
+                    knowledge_client,
+                    external_id=resolved_entity_id,
+                    source_path=source_path,
+                    destination_path=destination_path,
+                    project_home=active_project.home,
+                )
+
             if output_format == "json":
-                return {
+                payload: dict[str, Any] = {
                     "moved": True,
                     "title": result.title,
                     "permalink": result.permalink,
@@ -1003,6 +1020,11 @@ move_note("{identifier}", destination_folder="notes")
                     "source": identifier,
                     "destination": destination_path,
                 }
+                if verification is not None:
+                    payload["verification"] = verification.as_dict()
+                    if verification.status == "failed":
+                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                return payload
 
             # Build success message
             result_lines = [
@@ -1014,6 +1036,9 @@ move_note("{identifier}", destination_folder="notes")
                 "",
                 f"<!-- Project: {active_project.name} -->",
             ]
+
+            if verification is not None:
+                result_lines.append(verification.as_text())
 
             # Log the operation
             logger.debug(
