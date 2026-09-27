@@ -4,6 +4,21 @@
 
 ### Features
 
+- MCP HTTP and SSE transports check Host and Origin on every request
+  (FastMCP's guard in strict mode). The Host must be loopback, the bound
+  address, or a name in `mcp_http_allowed_hosts` (421 otherwise); a browser
+  Origin must be same-origin, loopback, or in `mcp_http_allowed_origins`
+  (403 otherwise). A tunnel hostname belongs in `mcp_http_allowed_hosts`.
+
+- MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
+  or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or
+  `mcp_http_clients` (`client:token` pairs) to require a bearer token; the
+  token is never logged. A non-loopback bind without a token logs a warning.
+  `/.well-known/oauth-protected-resource` advertises bearer auth and, when
+  `mcp_oauth_issuer` is set, an external OAuth 2.1 authorization server. This
+  process does not mint tokens. See `docs/SHARED_MEMORY.md` for the ChatGPT
+  streamable-HTTP setup.
+
 - MCP writes and edits record which client wrote the note when that client
   sends `clientInfo` and `record_provenance` is on (the default). Frontmatter
   gains `source_client` and `updated` on every such write, and

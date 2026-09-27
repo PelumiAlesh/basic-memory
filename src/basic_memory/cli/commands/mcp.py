@@ -126,9 +126,13 @@ def mcp(
         # Imported here so stdio startup does not register the HTTP route, and
         # so the bearer gate exists before the transport accepts a connection.
         from basic_memory.mcp.http_auth import http_middleware, warn_if_http_exposed
-        from basic_memory.shared_memory.http_security import resolve_bind_host
+        from basic_memory.shared_memory.http_security import (
+            host_origin_settings,
+            resolve_bind_host,
+        )
 
-        bind_host = resolve_bind_host(host, ConfigManager().config.mcp_http_host)
+        app_config = ConfigManager().config
+        bind_host = resolve_bind_host(host, app_config.mcp_http_host)
         warn_if_http_exposed(bind_host)
         logger.info(f"MCP HTTP transport bound to {bind_host}:{port}")
         mcp_server.run(
@@ -138,4 +142,5 @@ def mcp(
             path=path,
             log_level="INFO",
             middleware=http_middleware(),
+            **host_origin_settings(app_config),
         )
