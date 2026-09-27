@@ -788,6 +788,25 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    brief_profile_note: str = Field(
+        default="me/profile",
+        description="Permalink or title of the profile note included in get_brief. Env: BASIC_MEMORY_BRIEF_PROFILE_NOTE",
+    )
+    brief_state_note: str = Field(
+        default="project/state",
+        description="Permalink or title of the current-state note included in get_brief. Env: BASIC_MEMORY_BRIEF_STATE_NOTE",
+    )
+    brief_decision_days: int = Field(
+        default=14,
+        description="How many days of decision notes get_brief includes. Env: BASIC_MEMORY_BRIEF_DECISION_DAYS",
+        gt=0,
+    )
+    brief_token_budget: int = Field(
+        default=1500,
+        description="Default token budget for get_brief. Roughly four characters per token. Env: BASIC_MEMORY_BRIEF_TOKEN_BUDGET",
+        gt=0,
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

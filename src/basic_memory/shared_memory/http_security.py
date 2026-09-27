@@ -67,9 +67,7 @@ def _pairs(raw: str) -> dict[str, str]:
         # the process output the first time config failed to parse.
         # Outcome: a fixed sentence, no values.
         if not separator or not client.strip() or not token:
-            raise ValueError(
-                "mcp_http_clients must be comma-separated client:token pairs"
-            )
+            raise ValueError("mcp_http_clients must be comma-separated client:token pairs")
         tokens[client.strip().lower()] = token
     return tokens
 
@@ -119,8 +117,7 @@ def www_authenticate(auth: HttpAuthConfig) -> str:
     """Challenge header. Never includes a token or the issuer secret."""
     if auth.oauth_issuer:
         return (
-            'Bearer realm="basic-memory", '
-            'resource_metadata="/.well-known/oauth-protected-resource"'
+            'Bearer realm="basic-memory", resource_metadata="/.well-known/oauth-protected-resource"'
         )
     return 'Bearer realm="basic-memory"'
 

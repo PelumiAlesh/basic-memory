@@ -4,6 +4,23 @@
 
 ### Features
 
+- `get_brief(project, token_budget)` and the `memory://_brief/{project}` resource
+  return a bounded briefing for clients without hooks: the profile note
+  (`brief_profile_note`, default `me/profile`), the current-state note
+  (`brief_state_note`, default `project/state`), decisions from the last
+  `brief_decision_days` (default 14), open-question and unreviewed counts, and
+  notes updated in the last seven days. The default budget is
+  `brief_token_budget` (1500). Later sections are dropped first.
+
+- MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
+  or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or
+  `mcp_http_clients` (`client:token` pairs) to require a bearer token; the
+  token is never logged. A non-loopback bind without a token logs a warning.
+  `/.well-known/oauth-protected-resource` advertises bearer auth and, when
+  `mcp_oauth_issuer` is set, an external OAuth 2.1 authorization server. This
+  process does not mint tokens. See `docs/SHARED_MEMORY.md` for the ChatGPT
+  streamable-HTTP setup.
+
 - MCP writes and edits record which client wrote the note when that client
   sends `clientInfo` and `record_provenance` is on (the default). Frontmatter
   gains `source_client` and `updated` on every such write, and
