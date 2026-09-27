@@ -198,3 +198,10 @@ afterMCPExecution plus `tool_name` on afterMCPExecution.
 a brief on resume through that hook may be unavailable (use sessionStart or accept inferred
 brief metrics). HTTP clients without hooks (ChatGPT, Grok) get INFERRED session stats from MCP
 logs using a 30-minute idle gap.
+
+## Session capture (v2)
+
+Off by default. Opt in with ``bm setup --session-capture``, which sets
+``session_capture_enabled`` in config. Fork stop hooks append **new** turns only
+into a single ``inbox/session-<conversation>.md`` note per harness conversation id,
+with long tool output truncated locally. Nothing is sent to the cloud.
