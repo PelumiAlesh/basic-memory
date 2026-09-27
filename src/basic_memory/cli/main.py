@@ -33,6 +33,7 @@ if not _version_only_invocation(sys.argv[1:]):
         orphans,
         posix,
         project,
+        brief,
         schema,
         setup_cmd,
         status,
