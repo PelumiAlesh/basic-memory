@@ -237,8 +237,9 @@ async def lifespan(app: FastMCP):
 BASIC_MEMORY_INSTRUCTIONS = (
     "Basic Memory is the user's personal knowledge base: Markdown notes that persist "
     "across conversations and that both the user and their AI assistants can read and write.\n\n"
-    "At the start of a session, call `recent_activity` to orient yourself in the user's notes "
-    "before answering from memory. If the knowledge base is empty, briefly explain that Basic "
+    "At the start of a session, read `memory://_brief/<project>` (or call `get_brief`) "
+    "for a bounded briefing: profile, current state, recent decisions, and open items. "
+    "Then call `recent_activity` if you need more before answering from memory. If the knowledge base is empty, briefly explain that Basic "
     "Memory gives them persistent notes shared between the user and their AI, and offer to save "
     "something useful from this conversation as their first note with `write_note` — then wait "
     "for them to agree before writing anything. Do not create notes unprompted.\n\n"

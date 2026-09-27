@@ -1301,7 +1301,77 @@ def _session_start(harness: Harness, project_dir: Optional[Path]) -> None:
         print(f"# Basic Memory\n\n{profile.setup_nudge}")
         return
     brief = _build_brief(profile, cfg, configured, checkpoint_prompt)
+    brief = _append_project_brief(brief, primary, cfg)
     print(brief[:MAX_BRIEF_CHARS])
+
+
+# --- Project brief inside the session-start hook ---
+# Smallest amount of room worth spending on the brief: below this the token
+# budget rounds to a heading and one truncated line.
+_MIN_PROJECT_BRIEF_CHARS = 400
+
+
+async def _project_brief_text(primary: str, token_budget: int) -> str | None:
+    """The same text `get_brief` returns, for the pinned project; None on any failure."""
+    from basic_memory.hooks.project_ref import split_project_ref
+    from basic_memory.mcp.tools.brief import build_brief
+
+    project, project_id = split_project_ref(primary)
+    try:
+        return await asyncio.wait_for(
+            build_brief(
+                project=project or None,
+                project_id=project_id,
+                token_budget=token_budget,
+                context=None,
+            ),
+            timeout=QUERY_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        # Same fail-open posture as _query: the session brief must never error
+        # because one of its sections could not be read.
+        logger.warning(f"project brief skipped: {exc}")
+        return None
+
+
+def _append_project_brief(brief: str, primary: str, cfg: dict[str, Any]) -> str:
+    """Add the project brief (#686's session brief plus get_brief) inside the budget.
+
+    Trigger: a project is pinned and `hook_project_brief` is on (the default).
+    Why: clients with hooks should not have to call `get_brief`; the profile,
+    state, decisions, and inbox counts arrive with the session. Cursor's
+    sessionStart reads this through additional_context.
+    Outcome: a second fenced data block after the existing brief, sized so the
+    caller's MAX_BRIEF_CHARS slice can only trim guidance, never reopen a fence.
+    A disabled brief, no pinned project, or too little room leaves `brief` as is.
+    """
+    from basic_memory.config import ConfigManager
+
+    config = ConfigManager().config
+    if not primary or not config.hook_project_brief or cfg.get("projectBrief") is False:
+        return brief
+    heading = (
+        "\n\n## Project brief\n\nReference data from the project, fenced like the block above.\n\n"
+    )
+    room = MAX_BRIEF_CHARS - len(brief) - len(heading) - 2 * (_MAX_FENCE_RUN + 8)
+    if room < _MIN_PROJECT_BRIEF_CHARS:
+        return brief
+    requested = cfg.get("briefTokenBudget")
+    budget = (
+        int(requested)
+        if isinstance(requested, int) and requested > 0
+        else config.brief_token_budget
+    )
+    budget = min(budget, room // 4)
+    text = run_with_cleanup(_project_brief_text(primary, budget))
+    if not text:
+        return brief
+    fence, lines = _fence(text.splitlines())
+    data_text = "\n".join(lines)
+    notice = "\n… [truncated]"
+    if len(data_text) > room:
+        data_text = data_text[: max(0, room - len(notice))].rstrip() + notice
+    return f"{brief}{heading}{fence}text\n{data_text}\n{fence}"
 
 
 def _pre_compact(harness: Harness, project_dir: Optional[Path]) -> None:
