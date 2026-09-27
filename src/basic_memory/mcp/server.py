@@ -18,6 +18,7 @@ from basic_memory.index.note_content_materialization import drain_pending_materi
 from basic_memory.db import scoped_session
 from basic_memory.index.local_schedulers import drain_background_tasks
 from basic_memory.mcp.client_info import MCPClientInfoMiddleware
+from basic_memory.shared_memory.usage_log import UsageLogMiddleware, start_usage_log_background
 from basic_memory.mcp.container import McpContainer, set_container
 from basic_memory.read_cache import ReadCache, ReadCacheUnavailable
 from basic_memory.read_cache.lifecycle import open_redis_read_cache
@@ -113,6 +114,9 @@ async def lifespan(app: FastMCP):
     #      config decides what clients see (no if-checks inside tool bodies).
     # Outcome: enabled by default; an explicit opt-out hides the POSIX group.
     set_posix_tools_visibility(app, config.enable_posix_tools)
+
+    if config.usage_log_enabled and not config.is_test_env:
+        start_usage_log_background()
 
     standalone_redis_url = None if container.mode.is_cloud else config.redis_url
 
@@ -270,3 +274,4 @@ mcp = FastMCP(
     lifespan=lifespan,
 )
 mcp.add_middleware(MCPClientInfoMiddleware())
+mcp.add_middleware(UsageLogMiddleware())

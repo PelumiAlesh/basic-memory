@@ -16,6 +16,10 @@
   `created`, and `modified` keys are never written, and a stamped edit rewrites only the
   `bm_*` lines. Writes from apps that send no MCP clientInfo are unchanged. Setting:
   `record_provenance` (default `true`).
+- Local usage log under each project's `.bm-logs/` (settings `usage_log_enabled`,
+  `usage_log_retention_days`, `brief_refresh_hours`) with MCP middleware and stdlib hook
+  append path; `bm stats` summarizes calls, latency, conversation coverage, and inferred HTTP
+  sessions. See `docs/SHARED_MEMORY.md`.
 - **Breaking:** the MCP HTTP and SSE transports require a bearer token and bind
   `127.0.0.1` by default. `basic-memory mcp --transport streamable-http|sse` refuses to
   start without `mcp_http_token` (env `BASIC_MEMORY_MCP_HTTP_TOKEN`) or

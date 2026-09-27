@@ -791,6 +791,29 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    usage_log_enabled: bool = Field(
+        default=True,
+        description=(
+            "Append local usage/debug events under each project's .bm-logs/ directory. "
+            "Local only; disabled in cloud deployments. Env: BASIC_MEMORY_USAGE_LOG_ENABLED"
+        ),
+    )
+
+    usage_log_retention_days: int = Field(
+        default=90,
+        description="Delete events-*.jsonl older than this many days. Env: BASIC_MEMORY_USAGE_LOG_RETENTION_DAYS",
+        gt=0,
+    )
+
+    brief_refresh_hours: int = Field(
+        default=6,
+        description=(
+            "Hours after the last turn before a resumed conversation should receive "
+            "a fresh brief on prompt-submit. Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
+        ),
+        gt=0,
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
