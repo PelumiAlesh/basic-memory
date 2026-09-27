@@ -34,6 +34,7 @@ if not _version_only_invocation(sys.argv[1:]):
         posix,
         project,
         schema,
+        setup_cmd,
         status,
         tool,
         update,
