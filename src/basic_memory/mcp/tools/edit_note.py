@@ -14,6 +14,8 @@ if TYPE_CHECKING:  # pragma: no cover
     from basic_memory.mcp.clients import KnowledgeClient
 
 from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.provenance import stamp_provenance
+from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
 from basic_memory.file_utils import (
     dump_frontmatter,
     has_frontmatter,
@@ -614,6 +616,16 @@ async def edit_note(
                         "metadata values cannot be null (key deletion is not supported): "
                         + ", ".join(null_keys)
                     )
+
+            # Same provenance stamp as write_note. created_by_client is kept only
+            # when this edit creates the note; updates preserve the first writer.
+            await remember_mcp_client(context)
+            stamped = stamp_provenance(
+                metadata,
+                client=current_client_slug(),
+                enabled=ConfigManager().config.record_provenance,
+            )
+            metadata = stamped or None
 
             # Use the PATCH endpoint to edit the entity
             try:

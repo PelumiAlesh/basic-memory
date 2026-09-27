@@ -23,6 +23,7 @@ from basic_memory.file_utils import (
     parse_frontmatter,
     remove_frontmatter,
 )
+from basic_memory.shared_memory.provenance import keep_original_creator
 from basic_memory.markdown import EntityMarkdown
 from basic_memory.markdown.entity_parser import (
     EntityParser,
@@ -454,6 +455,8 @@ async def prepare_update_entity_content(
     post = await schema_to_markdown(schema)
     merged_metadata = deepcopy(existing_metadata)
     merged_metadata.update(post.metadata)
+    # created_by_client is the first MCP client, not whoever last overwrote the note.
+    keep_original_creator(existing_metadata, merged_metadata)
     merged_metadata["permalink"] = resolved_permalink
     merged_post = frontmatter.Post(post.content)
     merged_post.metadata.update(merged_metadata)
@@ -747,6 +750,8 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
 
     merged_metadata = deepcopy(current_metadata)
     merged_metadata.update(sanitized)
+    # Edits may carry the current client as created_by_client. Keep the original.
+    keep_original_creator(current_metadata, merged_metadata)
 
     post = frontmatter.Post(body)
     post.metadata.update(merged_metadata)

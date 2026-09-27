@@ -733,6 +733,21 @@ class BasicMemoryConfig(BaseSettings):
         description="Default cloud workspace tenant_id. Set by 'bm cloud workspace set-default'.",
     )
 
+    # --- Shared-memory fork features ---
+    # Each flag keeps upstream behavior when left at its default, except where
+    # the feature itself specifies a new default (localhost bind, inactive
+    # search exclusion). See docs/SHARED_MEMORY.md.
+
+    record_provenance: bool = Field(
+        default=True,
+        description=(
+            "On MCP write and edit, record source_client, updated, and "
+            "created_by_client in frontmatter when the client identifies itself. "
+            "Writes with no clientInfo are unchanged. "
+            "Env: BASIC_MEMORY_RECORD_PROVENANCE"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
