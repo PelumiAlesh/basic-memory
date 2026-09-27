@@ -103,12 +103,14 @@ async def _review(
 
 
 @mcp.tool(
+    title="Review Queue",
+    tags={"review"},
     annotations={
         "title": "Review Queue",
         "readOnlyHint": True,
         "destructiveHint": False,
         "openWorldHint": False,
-    }
+    },
 )
 async def review_queue(
     project: str | None = None,
@@ -125,13 +127,15 @@ async def review_queue(
 
 
 @mcp.tool(
+    title="Review Note",
+    tags={"review"},
     annotations={
         "title": "Review Note",
         "readOnlyHint": False,
         "destructiveHint": True,
         "idempotentHint": False,
         "openWorldHint": False,
-    }
+    },
 )
 async def review_note(
     identifier: str,
