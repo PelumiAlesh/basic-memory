@@ -273,7 +273,9 @@ def test_edit_note_json_format_contract(app, app_config, test_project, config_ma
         "operation",
         "checksum",
         "fileCreated",
+        "verification",
     }
+    assert data["verification"]["status"] == "verified"
     assert data["operation"] == "append"
     assert data["fileCreated"] is False
     assert data["title"] == "Edit JSON Note"
