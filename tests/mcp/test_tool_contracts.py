@@ -1,4 +1,10 @@
-"""Tool contract tests for MCP tool signatures."""
+"""Tool contract tests for MCP tool signatures.
+
+The v2 fork stack tracks upstream tool names on the write-safety base branch.
+Brief and review-inbox tools from legacy PR #15 are intentionally out of scope
+here; do not add ``get_brief``, ``review_queue``, or ``review_note`` to the
+expected maps until those features land on their own branches.
+"""
 
 from __future__ import annotations
 
