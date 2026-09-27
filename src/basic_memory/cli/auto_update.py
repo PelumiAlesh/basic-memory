@@ -293,9 +293,10 @@ def run_auto_update(
     checked_at = now or datetime.now()
 
     # Trigger: the running build carries the fork's local version label.
-    # Why: the availability check and both upgrade commands follow the upstream
-    #      release (PyPI, the Homebrew tap), so acting on them can swap the fork for
-    #      upstream code. That has to be a deliberate `bm update --force`, not a timer.
+    # Why: the availability check compares against the upstream release (PyPI, the
+    #      Homebrew tap), which says nothing about the fork. Acting on it swaps in
+    #      upstream code (brew, pip) or re-fetches whatever the fork branch holds
+    #      (`uv tool upgrade` on a git install). Either must be deliberate.
     # Outcome: no network check and no install; the message names the fork's own
     #          reinstall command. Covers the CLI periodic check, the stdio MCP
     #          background thread, and `bm update`, which all call this function.

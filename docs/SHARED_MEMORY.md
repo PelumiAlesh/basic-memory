@@ -27,7 +27,9 @@ which the fork does not have. To bump the fork, edit that one string. When an up
 changes it, resolve the merge by keeping the upstream release and the fork label, for example
 `0.23.3+pelumi.1`.
 
-Automatic updates never replace a fork build. The periodic CLI check, the background check in
-stdio `basic-memory mcp`, and `bm update` all follow the upstream release on PyPI or the
-Homebrew tap, so on a `+pelumi` build they stop before any network call and print the fork's own
-reinstall command. `bm update --force` replaces the fork with the upstream release on purpose.
+Automatic updates never touch a fork build. The periodic CLI check, the background check in
+stdio `basic-memory mcp`, and `bm update` all compare against the upstream release on PyPI or the
+Homebrew tap. Acting on that answer would install upstream code (Homebrew, pip) or re-fetch
+whatever the fork branch holds at that moment (`uv tool upgrade` on a git install re-resolves the
+git URL). On a `+pelumi` build they stop before any network call and print the fork's own
+reinstall command. `bm update --force` runs the upstream update path on purpose.
