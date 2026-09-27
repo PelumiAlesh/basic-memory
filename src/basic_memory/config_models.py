@@ -870,6 +870,14 @@ class BasicMemoryConfig(BaseSettings):
         gt=0,
     )
 
+    session_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, fork setup hooks write a local inbox note for a stopped "
+            "conversation. Off by default. Env: BASIC_MEMORY_SESSION_CAPTURE_ENABLED"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
