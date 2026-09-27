@@ -326,6 +326,9 @@ async def build_context(
             raise ToolError(f"Invalid depth parameter: '{depth}' is not a valid integer")
 
     # URL is already validated and normalized by MemoryUrl type annotation
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
 
     with logfire.span(
         "mcp.tool.build_context",
@@ -379,6 +382,43 @@ async def build_context(
                 f"related_count={graph.metadata.related_count or 0} "
                 f"output_format={output_format}"
             )
+
+            from basic_memory.mcp.privacy_gate import (
+                current_access,
+                denial_for,
+                denial_for_markdown,
+            )
+
+            # Trigger: at least one client policy is configured.
+            # Why: with no policy the graph is unchanged, including notes that
+            # never set visibility.
+            # Outcome: hidden primaries drop out; hidden relations drop off the
+            # ones that remain. Missing visibility counts as private.
+            if not current_access().unrestricted:
+
+                def _hidden(content: object, path: str | None) -> bool:
+                    if isinstance(content, str) and content.lstrip().startswith("---"):
+                        return denial_for_markdown(content, path) is not None
+                    return denial_for(None, path) is not None
+
+                visible_results = []
+                for item in graph.results:
+                    primary = item.primary_result
+                    if _hidden(
+                        getattr(primary, "content", None),
+                        getattr(primary, "file_path", None),
+                    ):
+                        continue
+                    related = [
+                        related
+                        for related in item.related_results
+                        if not _hidden(
+                            getattr(related, "content", None),
+                            getattr(related, "file_path", None),
+                        )
+                    ]
+                    visible_results.append(item.model_copy(update={"related_results": related}))
+                graph = graph.model_copy(update={"results": visible_results})
 
             if compact:
                 graph = _compact_context_labels(graph)

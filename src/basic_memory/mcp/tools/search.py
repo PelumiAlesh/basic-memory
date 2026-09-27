@@ -909,6 +909,9 @@ async def _search_all_projects(
             continue
 
         databases_answered += 1
+        from basic_memory.mcp.privacy_gate import restrict_search_response
+
+        response = restrict_search_response(response)
         if compact:
             response = _compact_search_response(response)
         if response.query_hint:
@@ -1403,6 +1406,9 @@ async def search_notes(
     #      uncapped SQLite LIMIT. Mirrors recent_activity's guard so all navigation
     #      tools reject invalid pagination consistently.
     # Outcome: caller gets an explicit ValueError instead of a silent bad payload.
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
     if page < 1:
         raise ValueError(f"page must be >= 1, got {page}")
     if page_size < 1:
@@ -1619,6 +1625,9 @@ async def search_notes(
                     if guidance is not None:
                         return guidance
 
+                from basic_memory.mcp.privacy_gate import restrict_search_response
+
+                result = restrict_search_response(result)
                 if compact:
                     result = _compact_search_response(result)
                 if output_format == "json":

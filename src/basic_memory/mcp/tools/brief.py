@@ -32,6 +32,10 @@ async def _excerpt(knowledge: Any, identifier: str) -> str | None:
         entity = await knowledge.get_entity(entity_id)
     except ToolError:
         return None
+    from basic_memory.mcp.privacy_gate import denial_for
+
+    if denial_for(entity.entity_metadata, entity.file_path) is not None:
+        return "(not visible)"
     body = (entity.content or "").strip()
     if len(body) > _EXCERPT_CHARS:
         body = body[:_EXCERPT_CHARS].rstrip() + "…"
@@ -42,8 +46,11 @@ async def _search_lines(
     search: Any, query: SearchQuery, *, page_size: int
 ) -> tuple[list[str], int]:
     response = await search.search(query.model_dump(mode="json"), page=1, page_size=page_size)
-    lines = [_hit_line(hit.title, hit.permalink) for hit in response.results]
-    return lines, response.total
+    from basic_memory.mcp.privacy_gate import note_visible
+
+    visible = [hit for hit in response.results if note_visible(hit.metadata, hit.file_path)]
+    lines = [_hit_line(hit.title, hit.permalink) for hit in visible]
+    return lines, len(visible)
 
 
 async def build_brief(
