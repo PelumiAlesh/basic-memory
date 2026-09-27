@@ -498,15 +498,35 @@ class SearchService:
             allow_relaxed = self._is_relaxed_fts_fallback_eligible(
                 query, strict_search_text, prepared.retrieval_mode
             )
+            # Trigger: search_recency_weight is above zero.
+            # Why: the ranking window has to be wider than the page or a newer
+            # note just past the page can never move up. Weight 0 keeps the
+            # original limit and offset, so the default path is unchanged.
+            # Outcome: re-rank that window and return the requested slice.
+            recency_weight = ConfigManager().config.search_recency_weight
+            fetch_limit = limit
+            fetch_offset = offset
+            if recency_weight > 0:
+                fetch_limit = min(max(limit + offset, 1) + 50, 200)
+                fetch_offset = 0
             results = await self._search_repository(
                 prepared,
                 search_text=strict_search_text,
-                limit=limit,
-                offset=offset,
+                limit=fetch_limit,
+                offset=fetch_offset,
                 allow_relaxed=allow_relaxed,
                 session=session,
                 trace=trace,
             )
+            if recency_weight > 0:
+                from basic_memory.shared_memory.recency import apply_recency
+
+                ranked = apply_recency(
+                    list(results),
+                    weight=recency_weight,
+                    half_life_days=ConfigManager().config.search_recency_half_life_days,
+                )
+                results = ranked[offset : offset + limit]
 
         return results
 
