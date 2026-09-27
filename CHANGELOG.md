@@ -4,6 +4,13 @@
 
 ### Features
 
+- Optional review inbox (`review_inbox_enabled`, default false). In `status`
+  mode (the default) MCP-created notes with no caller-supplied status get
+  `status: unreviewed`. In `folder` mode, notes with an empty directory land
+  in `review_inbox_folder` (default `inbox/`). Updates do not re-queue a note.
+  `bm review` and the `review_queue` / `review_note` MCP tools list, promote
+  (`status: reviewed`), merge into another note, or discard.
+
 - `get_brief(project, token_budget)` and the `memory://_brief/{project}` resource
   return a bounded briefing for clients without hooks: the profile note
   (`brief_profile_note`, default `me/profile`), the current-state note

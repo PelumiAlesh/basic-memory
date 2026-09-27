@@ -15,6 +15,7 @@ from basic_memory.file_utils import remove_frontmatter
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
 from basic_memory.shared_memory.provenance import stamp_provenance
 from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
+from basic_memory.shared_memory.review import inbox_directory, mark_unreviewed_on_create
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -371,8 +372,9 @@ async def write_note(
     # Resolve overwrite flag: explicit parameter > config default
     # Trigger: caller omitted the parameter (None)
     # Why: lets users set a global default without breaking per-call overrides
+    app_config = ConfigManager().config
     effective_overwrite = (
-        overwrite if overwrite is not None else ConfigManager().config.write_note_overwrite_default
+        overwrite if overwrite is not None else app_config.write_note_overwrite_default
     )
     project = _compose_workspace_project_route(
         workspace=workspace,
@@ -401,6 +403,16 @@ async def write_note(
             # Normalize "/" to empty string for root directory (must happen before validation)
             if directory == "/":
                 directory = ""
+            # Trigger: review inbox is on in folder mode and the caller did not pick a directory.
+            # Why: tool-created notes can land in one place without changing notes that already
+            # name a directory. Status mode does not move the file.
+            # Outcome: an empty directory becomes review_inbox_folder.
+            directory = inbox_directory(
+                directory,
+                enabled=app_config.review_inbox_enabled,
+                mode=app_config.review_inbox_mode,
+                folder=app_config.review_inbox_folder,
+            )
 
             # Validate directory path to prevent path traversal attacks
             project_path = active_project.home
@@ -437,7 +449,12 @@ async def write_note(
             entity_metadata = stamp_provenance(
                 entity_metadata,
                 client=current_client_slug(),
-                enabled=ConfigManager().config.record_provenance,
+                enabled=app_config.record_provenance,
+            )
+            mark_unreviewed = mark_unreviewed_on_create(
+                metadata,
+                enabled=app_config.review_inbox_enabled,
+                mode=app_config.review_inbox_mode,
             )
 
             entity = Entity(
@@ -494,6 +511,22 @@ async def write_note(
                     raise ToolError(message)
                 case _:
                     assert_never(outcome)
+            # Trigger: review inbox is on and this call created a note with no status.
+            # Why: only new tool notes enter the queue. An update must not demote a
+            # note the user already promoted.
+            # Outcome: a follow-up edit sets status: unreviewed. The create itself
+            # has already succeeded.
+            if action == "Created" and mark_unreviewed:
+                from basic_memory.mcp.tools.edit_note import edit_note
+
+                await edit_note(
+                    result.permalink or result.file_path,
+                    operation="append",
+                    content="",
+                    metadata={"status": "unreviewed"},
+                    project=active_project.name,
+                    context=context,
+                )
             # --- Similar-note advisory ---
             # Trigger: the note was created (not updated).
             # Why: agents writing across sessions know the topic but not whether a note on
@@ -593,6 +626,9 @@ async def write_note(
             if tag_list:
                 summary.append(f"\n## Tags\n- {', '.join(tag_list)}")
 
+            if action == "Created" and mark_unreviewed:
+                summary.append("\nstatus: unreviewed")
+
             if similar_notes:
                 summary.append(
                     _format_similar_notes_section(similar_notes, new_permalink=response_permalink)
@@ -603,7 +639,7 @@ async def write_note(
                 f"MCP tool response: tool=write_note project={active_project.name} action={action} permalink={response_permalink} observations_count={len(result.observations)} relations_count={len(result.relations)} resolved_relations={resolved} unresolved_relations={unresolved} similar_notes_count={len(similar_notes)}"
             )
             if output_format == "json":
-                return {
+                payload = {
                     "title": result.title,
                     "permalink": response_permalink,
                     "file_path": result.file_path,
@@ -611,6 +647,9 @@ async def write_note(
                     "action": action.lower(),
                     "similar_notes": [dataclasses.asdict(note) for note in similar_notes],
                 }
+                if action == "Created" and mark_unreviewed:
+                    payload["status"] = "unreviewed"
+                return payload
 
             summary_result = "\n".join(summary)
             return add_project_metadata(summary_result, active_project.name)
