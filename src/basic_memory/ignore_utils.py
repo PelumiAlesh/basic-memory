@@ -164,6 +164,9 @@ desktop.ini
 # Obsidian
 .obsidian
 
+# Local usage log
+.bm-logs
+
 # Temporary files
 *.tmp
 *.swp

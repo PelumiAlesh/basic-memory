@@ -27,35 +27,20 @@ from basic_memory.config_models import CONFIG_FILE_MODE, resolve_data_dir
 from basic_memory.shared_memory.clients import request_client
 from basic_memory.shared_memory.usage_log_fast import (
     FILE_MODE,
+    META_EVENT,
     daily_log_path,
     ensure_log_dir,
     prune_expired_logs,
 )
 
 SALT_FILE_NAME = "usage_log_query_salt"
-META_EVENT = "meta"
 DROP_REASON = "dropped"
 QUEUE_MAX = 4096
 FLUSH_INTERVAL_SECONDS = 1.0
 FLUSH_BATCH_SIZE = 100
 BENCHMARK_BOUND_SECONDS = 0.001
 
-READ_TOOL_NAMES = frozenset(
-    {
-        "read_note",
-        "read_content",
-        "view_note",
-        "search_notes",
-        "search",
-        "fetch",
-        "build_context",
-        "recent_activity",
-        "list_directory",
-        "get_brief",
-    }
-)
 WRITE_TOOL_NAMES = frozenset({"write_note", "edit_note", "move_note", "delete_note"})
-HTTP_INFER_IDLE_MINUTES = 30
 
 
 @dataclass(slots=True)

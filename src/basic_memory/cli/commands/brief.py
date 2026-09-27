@@ -10,12 +10,7 @@ from typing import Annotated, Optional
 import typer
 
 from basic_memory.cli.app import app
-from basic_memory.cli.commands.command_utils import run_with_cleanup
-from basic_memory.cli.commands.routing import force_routing, validate_routing_flags
 from basic_memory.config import ConfigManager
-from basic_memory.mcp.async_client import get_client
-from basic_memory.mcp.project_context import get_active_project
-from basic_memory.mcp.tools.brief import build_brief
 from basic_memory.shared_memory.brief_delivery import (
     JsonBriefDeliveryStore,
     project_delivery_path,
@@ -39,6 +34,9 @@ def render_brief_for_project(project_name: str) -> str:
     Setup hooks call this so a delivered brief is the bounded project briefing,
     not the older harness profile placeholder.
     """
+    # Import on use. Registering `bm brief` must not load the MCP tool stack.
+    from basic_memory.cli.commands.command_utils import run_with_cleanup
+    from basic_memory.mcp.tools.brief import build_brief
 
     async def _run() -> str:
         return await build_brief(
@@ -94,6 +92,12 @@ def brief_command(
     ] = None,
 ) -> None:
     """Print the same bounded briefing as the get_brief MCP tool."""
+    from basic_memory.cli.commands.command_utils import run_with_cleanup
+    from basic_memory.cli.commands.routing import force_routing, validate_routing_flags
+    from basic_memory.mcp.async_client import get_client
+    from basic_memory.mcp.project_context import get_active_project
+    from basic_memory.mcp.tools.brief import build_brief
+
     validate_routing_flags(local=local, cloud=cloud)
     force_routing(local=local, cloud=cloud)
 

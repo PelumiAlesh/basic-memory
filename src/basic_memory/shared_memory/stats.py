@@ -10,12 +10,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from basic_memory.shared_memory.usage_log import (
+from basic_memory.shared_memory.usage_log_fast import (
     HTTP_INFER_IDLE_MINUTES,
+    LOG_DIR_NAME,
     META_EVENT,
     READ_TOOL_NAMES,
 )
-from basic_memory.shared_memory.usage_log_fast import LOG_DIR_NAME
 
 HOOK_CLIENTS = frozenset({"cursor", "claude-code", "claude", "codex"})
 PROMPT_HOOK_NAMES = frozenset(

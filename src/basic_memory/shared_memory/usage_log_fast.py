@@ -17,6 +17,23 @@ LOG_DIR_NAME = ".bm-logs"
 GITIGNORE_LINE = "*\n"
 DIR_MODE = 0o700
 FILE_MODE = 0o600
+# Shared with the stats reader. Kept here so `bm stats` does not import the MCP stack.
+META_EVENT = "meta"
+HTTP_INFER_IDLE_MINUTES = 30
+READ_TOOL_NAMES = frozenset(
+    {
+        "read_note",
+        "read_content",
+        "view_note",
+        "search_notes",
+        "search",
+        "fetch",
+        "build_context",
+        "recent_activity",
+        "list_directory",
+        "get_brief",
+    }
+)
 _CONFIG_FILE = "config.json"
 _DATA_DIR_NAME = "basic-memory"
 _DEFAULT_RETENTION_DAYS = 90
