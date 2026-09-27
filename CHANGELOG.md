@@ -4,6 +4,11 @@
 
 ### Shared memory fork
 
+- `get_brief` / `memory://_brief/{project}` and `bm brief` render a bounded project
+  briefing: optional profile and current-state excerpts (omitted when missing), open
+  decision titles, inbox markdown count, and `brief_refresh_hours` throttling via
+  `<project>/.basic-memory/brief-delivery.json` when `--conversation-id` is set.
+
 - Fork builds identify themselves: `basic-memory --version` and the package metadata
   both report `0.23.2+pelumi.1` (a PEP 440 local label) when installed from
   `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The

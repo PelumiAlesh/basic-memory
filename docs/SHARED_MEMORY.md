@@ -33,3 +33,24 @@ Homebrew tap. Acting on that answer would install upstream code (Homebrew, pip) 
 whatever the fork branch holds at that moment (`uv tool upgrade` on a git install re-resolves the
 git URL). On a `+pelumi` build they stop before any network call and print the fork's own
 reinstall command. `bm update --force` runs the upstream update path on purpose.
+
+## Brief
+
+`get_brief(project, token_budget)` and `memory://_brief/{project}` return a bounded
+orientation for clients that do not run session hooks. `bm brief` prints the same text.
+
+Settings (env vars use the `BASIC_MEMORY_` prefix):
+
+- `brief_state_note` (default `project/state`) — included when the note exists
+- `brief_profile_note` (default `me/profile`) — optional excerpt when the note exists;
+  missing notes are omitted with no error text
+- `brief_inbox_folder` (default `inbox`) — top-level markdown files counted in the brief
+- `brief_decision_days` (default `14`) — decision note titles listed by search
+- `brief_token_budget` (default `1500`) — rough character budget (`len / 4`); later
+  sections drop first
+- `brief_refresh_hours` (default `24`) — minimum time between `bm brief` deliveries for
+  the same `--conversation-id` (use `--force` to override)
+
+Delivery timestamps for `--conversation-id` are stored in
+`<project>/.basic-memory/brief-delivery.json`. Pass `--delivery-store` to override the path.
+This PR does not install SessionStart hooks; use `bm setup` when that lands in the stack.
