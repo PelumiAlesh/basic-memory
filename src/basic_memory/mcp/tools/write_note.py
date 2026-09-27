@@ -2,6 +2,7 @@
 
 import dataclasses
 import textwrap
+from pathlib import Path
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Annotated, List, Union, Optional, Literal, assert_never
 
@@ -11,8 +12,29 @@ from loguru import logger
 from pydantic import AliasChoices, BeforeValidator, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.file_utils import remove_frontmatter
+from basic_memory.file_utils import (
+    ParseError,
+    has_frontmatter,
+    parse_frontmatter,
+    remove_frontmatter,
+)
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
+from basic_memory.mcp.write_verification import verify_note_write
+from basic_memory.shared_memory.git_sync import (
+    GitMemoryError,
+    schedule_autocommit,
+    snapshot_before_write,
+)
+from basic_memory.shared_memory.conflicts import (
+    format_possible_conflicts,
+    supersedes_targets,
+    wants_conflict_check,
+)
+from basic_memory.shared_memory.client_registry import client_registry
+from basic_memory.shared_memory.provenance import stamp_provenance
+from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
+from basic_memory.shared_memory.review import inbox_directory, mark_unreviewed_on_create
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -369,8 +391,9 @@ async def write_note(
     # Resolve overwrite flag: explicit parameter > config default
     # Trigger: caller omitted the parameter (None)
     # Why: lets users set a global default without breaking per-call overrides
+    app_config = ConfigManager().config
     effective_overwrite = (
-        overwrite if overwrite is not None else ConfigManager().config.write_note_overwrite_default
+        overwrite if overwrite is not None else app_config.write_note_overwrite_default
     )
     project = _compose_workspace_project_route(
         workspace=workspace,
@@ -399,6 +422,16 @@ async def write_note(
             # Normalize "/" to empty string for root directory (must happen before validation)
             if directory == "/":
                 directory = ""
+            # Trigger: review inbox is on in folder mode and the caller did not pick a directory.
+            # Why: tool-created notes can land in one place without changing notes that already
+            # name a directory. Status mode does not move the file.
+            # Outcome: an empty directory becomes review_inbox_folder.
+            directory = inbox_directory(
+                directory,
+                enabled=app_config.review_inbox_enabled,
+                mode=app_config.review_inbox_mode,
+                folder=app_config.review_inbox_folder,
+            )
 
             # Validate directory path to prevent path traversal attacks
             project_path = active_project.home
@@ -429,6 +462,19 @@ async def write_note(
                 entity_metadata.update(metadata)
             if tag_list:
                 entity_metadata["tags"] = tag_list
+            # Provenance is recorded only when this MCP session named its client.
+            # The API and CLI never reach this branch, so their writes stay unchanged.
+            await remember_mcp_client(context)
+            entity_metadata = stamp_provenance(
+                entity_metadata,
+                client=current_client_slug(),
+                enabled=app_config.record_provenance,
+            )
+            mark_unreviewed = mark_unreviewed_on_create(
+                metadata,
+                enabled=app_config.review_inbox_enabled,
+                mode=app_config.review_inbox_mode,
+            )
 
             entity = Entity(
                 title=title,
@@ -445,14 +491,43 @@ async def write_note(
             # Use typed KnowledgeClient for API calls
             knowledge_client = KnowledgeClient(client, active_project.external_id)
 
+            # Trigger: git autocommit is on and the target file already exists locally.
+            # Why: an overwrite must be undoable even if the process dies before the
+            # post-write commit (#1156). The snapshot lands in history first.
+            # Outcome: a `memory(<client>): snapshot` commit, never pushed.
+            if app_config.git_autocommit and effective_overwrite and active_project.home:
+                try:
+                    snapshot_before_write(
+                        Path(active_project.home),
+                        entity.file_path,
+                        client=current_client_slug(),
+                        note=title,
+                        operation="overwrite",
+                        enabled=True,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git snapshot skipped: {exc}")
+
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
-            outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
+            # Shared-server mode serializes canonical writes in-process; readers stay free.
+            async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
             match outcome:
                 case NoteCreated(entity=result):
                     action = "Created"
+                    client_registry().record_write(
+                        current_client_slug(),
+                        title=result.title,
+                        permalink=result.permalink,
+                    )
                 case NoteUpdated(entity=result):
                     action = "Updated"
+                    client_registry().record_write(
+                        current_client_slug(),
+                        title=result.title,
+                        permalink=result.permalink,
+                    )
                 case NoteAlreadyExists():
                     if output_format == "json":
                         return {
@@ -484,6 +559,50 @@ async def write_note(
                     raise ToolError(message)
                 case _:
                     assert_never(outcome)
+            # Trigger: review inbox is on and this call created a note with no status.
+            # Why: only new tool notes enter the queue. An update must not demote a
+            # note the user already promoted.
+            # Outcome: a follow-up edit sets status: unreviewed. The create itself
+            # has already succeeded.
+            if action == "Created" and mark_unreviewed:
+                from basic_memory.mcp.tools.edit_note import edit_note
+
+                await edit_note(
+                    result.permalink or result.file_path,
+                    operation="append",
+                    content="",
+                    metadata={"status": "unreviewed"},
+                    project=active_project.name,
+                    context=context,
+                )
+            content_frontmatter: dict[str, object] = {}
+            if has_frontmatter(content):
+                try:
+                    content_frontmatter = parse_frontmatter(content)
+                except ParseError:
+                    content_frontmatter = {}
+            superseded: list[str] = []
+            for target in supersedes_targets(entity_metadata, content_frontmatter):
+                if target in {result.permalink, result.file_path, title}:
+                    continue
+                from basic_memory.mcp.tools.edit_note import edit_note
+
+                try:
+                    await edit_note(
+                        target,
+                        operation="append",
+                        content="",
+                        metadata={"status": "superseded"},
+                        project=active_project.name,
+                        context=context,
+                    )
+                except ToolError:
+                    superseded.append(f"{target} (not updated)")
+                else:
+                    superseded.append(target)
+            conflict_check = wants_conflict_check(
+                note_type, enabled=app_config.conflict_check_on_write
+            )
             # --- Similar-note advisory ---
             # Trigger: the note was created (not updated).
             # Why: agents writing across sessions know the topic but not whether a note on
@@ -497,7 +616,8 @@ async def write_note(
             # Outcome: the summary gains a "Similar existing notes" section when the index
             #          has neighbors. The write itself is already complete either way.
             similar_notes: list[SimilarNote] = []
-            if action == "Created":
+            # Decision and preference writes report conflicts on update as well as create.
+            if action == "Created" or conflict_check:
                 try:
                     similar_notes = await _find_similar_notes(
                         SearchClient(client, active_project.external_id),
@@ -583,17 +703,62 @@ async def write_note(
             if tag_list:
                 summary.append(f"\n## Tags\n- {', '.join(tag_list)}")
 
-            if similar_notes:
+            if action == "Created" and mark_unreviewed:
+                summary.append("\nstatus: unreviewed")
+
+            if similar_notes and conflict_check:
+                summary.append(
+                    format_possible_conflicts(
+                        [(note.title, note.permalink or note.file_path) for note in similar_notes]
+                    )
+                )
+            elif similar_notes:
                 summary.append(
                     _format_similar_notes_section(similar_notes, new_permalink=response_permalink)
                 )
+            if superseded:
+                summary.append("\n## Supersedes\n" + "\n".join(f"- {item}" for item in superseded))
+
+            # --- Write verification ---
+            # Trigger: verify_writes is on (the default).
+            # Why: "saved" must mean the index and the file hold what was sent, not
+            # that the API accepted it (#1341, #1531, #1479, #1585).
+            # Outcome: a Verification section with verified, pending, or failed.
+            verification = None
+            if app_config.verify_writes:
+                verification = await verify_note_write(
+                    knowledge_client,
+                    external_id=result.external_id,
+                    expected_content=content,
+                    project_home=active_project.home,
+                )
+                summary.append(verification.as_text())
+                if verification.status == "failed":
+                    logger.warning(
+                        f"write_note verification failed project={active_project.name} "
+                        f"permalink={response_permalink}: {verification.error}"
+                    )
 
             # Log the response with structured data
             logger.debug(
                 f"MCP tool response: tool=write_note project={active_project.name} action={action} permalink={response_permalink} observations_count={len(result.observations)} relations_count={len(result.relations)} resolved_relations={resolved} unresolved_relations={unresolved} similar_notes_count={len(similar_notes)}"
             )
+            if app_config.git_autocommit and active_project.home and result.file_path:
+                try:
+                    schedule_autocommit(
+                        Path(active_project.home),
+                        result.file_path,
+                        client=current_client_slug(),
+                        note=result.title,
+                        enabled=True,
+                        debounce_seconds=app_config.git_autocommit_debounce_seconds,
+                        auto_push=app_config.git_auto_push,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git autocommit skipped: {exc}")
+
             if output_format == "json":
-                return {
+                payload = {
                     "title": result.title,
                     "permalink": response_permalink,
                     "file_path": result.file_path,
@@ -601,6 +766,25 @@ async def write_note(
                     "action": action.lower(),
                     "similar_notes": [dataclasses.asdict(note) for note in similar_notes],
                 }
+                if action == "Created" and mark_unreviewed:
+                    payload["status"] = "unreviewed"
+                if conflict_check:
+                    payload["possible_conflicts"] = [
+                        {
+                            "title": note.title,
+                            "permalink": note.permalink,
+                            "file_path": note.file_path,
+                            "flag": "possible conflict",
+                        }
+                        for note in similar_notes
+                    ]
+                if superseded:
+                    payload["supersedes"] = superseded
+                if verification is not None:
+                    payload["verification"] = verification.as_dict()
+                    if verification.status == "failed":
+                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                return payload
 
             summary_result = "\n".join(summary)
             return add_project_metadata(summary_result, active_project.name)

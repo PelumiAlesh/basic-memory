@@ -1,5 +1,6 @@
 """Edit note tool for Basic Memory MCP server."""
 
+from pathlib import Path
 from typing import Any, TYPE_CHECKING, Annotated, Literal, Optional
 
 import frontmatter
@@ -14,6 +15,17 @@ if TYPE_CHECKING:  # pragma: no cover
     from basic_memory.mcp.clients import KnowledgeClient
 
 from basic_memory.config import ConfigManager
+from basic_memory.mcp.write_verification import read_back, verify_note_edit, verify_note_write
+from basic_memory.schemas.v2.entity import EntityResponseV2
+from basic_memory.shared_memory.git_sync import (
+    GitMemoryError,
+    schedule_autocommit,
+    snapshot_before_write,
+)
+from basic_memory.shared_memory.client_registry import client_registry
+from basic_memory.shared_memory.provenance import stamp_provenance
+from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.file_utils import (
     dump_frontmatter,
     has_frontmatter,
@@ -615,6 +627,16 @@ async def edit_note(
                         + ", ".join(null_keys)
                     )
 
+            # Same provenance stamp as write_note. created_by_client is kept only
+            # when this edit creates the note; updates preserve the first writer.
+            await remember_mcp_client(context)
+            stamped = stamp_provenance(
+                metadata,
+                client=current_client_slug(),
+                enabled=ConfigManager().config.record_provenance,
+            )
+            metadata = stamped or None
+
             # Use the PATCH endpoint to edit the entity
             try:
                 # Import here to avoid circular import
@@ -650,6 +672,8 @@ async def edit_note(
                 file_created = False
                 entity_id = ""
                 result: EntityResponse | None = None
+                before_entity: EntityResponseV2 | None = None
+                app_config = ConfigManager().config
 
                 # Try to resolve the entity; for append/prepend, create it if not found
                 try:
@@ -752,7 +776,8 @@ async def edit_note(
                             directory=directory,
                             operation=operation,
                         )
-                        result = await knowledge_client.create_entity(entity.model_dump())
+                        async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                            result = await knowledge_client.create_entity(entity.model_dump())
                         file_created = True
                     else:
                         # find_replace/replace_section require existing content — re-raise
@@ -778,12 +803,40 @@ async def edit_note(
                     if metadata:
                         edit_data["metadata"] = metadata
 
+                    # One read before the patch serves two features: the pre-edit body
+                    # for verification, and the file path for the git snapshot that
+                    # makes the edit undoable before its own commit lands (#1156).
+                    if app_config.verify_writes or app_config.git_autocommit:
+                        before_entity = await read_back(knowledge_client, entity_id)
+                    if (
+                        app_config.git_autocommit
+                        and before_entity is not None
+                        and active_project.home
+                    ):
+                        try:
+                            snapshot_before_write(
+                                Path(active_project.home),
+                                before_entity.file_path,
+                                client=current_client_slug(),
+                                note=before_entity.title,
+                                operation=operation,
+                                enabled=True,
+                            )
+                        except GitMemoryError as exc:
+                            logger.warning(f"git snapshot skipped: {exc}")
+
                     # Call the PATCH endpoint
-                    result = await knowledge_client.patch_entity(entity_id, edit_data)
+                    async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                        result = await knowledge_client.patch_entity(entity_id, edit_data)
 
                 # --- Format response ---
                 # result is always set: either by create_entity (auto-create) or patch_entity (edit)
                 assert result is not None
+                client_registry().record_write(
+                    current_client_slug(),
+                    title=result.title,
+                    permalink=result.permalink,
+                )
                 if file_created:
                     summary = [
                         f"# Created note ({operation})",
@@ -852,8 +905,52 @@ async def edit_note(
                     f"file_created={str(file_created).lower()}"
                 )
 
+                if app_config.git_autocommit and active_project.home and result.file_path:
+                    try:
+                        schedule_autocommit(
+                            Path(active_project.home),
+                            result.file_path,
+                            client=current_client_slug(),
+                            note=result.title,
+                            enabled=True,
+                            debounce_seconds=app_config.git_autocommit_debounce_seconds,
+                            auto_push=app_config.git_auto_push,
+                        )
+                    except GitMemoryError as exc:
+                        logger.warning(f"git autocommit skipped: {exc}")
+
+                # --- Write verification ---
+                # The API accepted the edit; now confirm the note holds it once and
+                # kept the rest (#1531, #1585 report edits that duplicate or drop text).
+                verification = None
+                if app_config.verify_writes and result.external_id:
+                    if file_created:
+                        verification = await verify_note_write(
+                            knowledge_client,
+                            external_id=result.external_id,
+                            expected_content=content,
+                            project_home=active_project.home,
+                        )
+                    else:
+                        verification = await verify_note_edit(
+                            knowledge_client,
+                            external_id=result.external_id,
+                            operation=operation,
+                            new_content=content,
+                            before_markdown=before_entity.content if before_entity else None,
+                            find_text=find_text,
+                            expected_replacements=effective_replacements,
+                            project_home=active_project.home,
+                        )
+                    summary.append(verification.as_text())
+                    if verification.status == "failed":
+                        logger.warning(
+                            f"edit_note verification failed project={active_project.name} "
+                            f"permalink={result.permalink}: {verification.error}"
+                        )
+
                 if output_format == "json":
-                    return {
+                    payload: dict[str, Any] = {
                         "title": result.title,
                         "permalink": result.permalink,
                         "file_path": result.file_path,
@@ -861,6 +958,11 @@ async def edit_note(
                         "operation": operation,
                         "fileCreated": file_created,
                     }
+                    if verification is not None:
+                        payload["verification"] = verification.as_dict()
+                        if verification.status == "failed":
+                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    return payload
 
                 summary_result = "\n".join(summary)
                 return add_project_metadata(summary_result, active_project.name)

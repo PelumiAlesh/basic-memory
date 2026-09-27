@@ -157,6 +157,11 @@ def status(
         False, "--local", help="Force local API routing (ignore cloud mode)"
     ),
     cloud: bool = typer.Option(False, "--cloud", help="Force cloud API routing"),
+    shared: bool = typer.Option(
+        False,
+        "--shared",
+        help="Show the shared MCP server claim and in-process client sightings",
+    ),
 ):
     """Show current project-index observation status and readiness.
 
@@ -167,6 +172,7 @@ def status(
     Use --wait to block until every stage settles.
     Use --local to force local routing when cloud mode is enabled.
     Use --cloud to force cloud routing when cloud mode is disabled.
+    Use --shared for the multi-client MCP claim and client list (no tokens).
     """
     from basic_memory.cli.commands.command_utils import run_with_cleanup
 
@@ -180,6 +186,50 @@ def status(
     # Outcome: reject it up front with a clear parameter error.
     if wait and timeout < 0:
         raise typer.BadParameter("--timeout must be >= 0", param_hint="'--timeout'")
+
+    if shared:
+        from basic_memory.shared_memory.client_registry import (
+            client_registry,
+            format_client_report,
+        )
+        from basic_memory.shared_memory.process_guard import living_claim, read_claim
+
+        claim = living_claim() or read_claim()
+        payload = {
+            "clients": [
+                {
+                    "client": item.client,
+                    "first_seen": item.first_seen,
+                    "last_seen": item.last_seen,
+                    "request_count": item.request_count,
+                    "last_write_title": item.last_write_title,
+                    "last_write_permalink": item.last_write_permalink,
+                    "last_write_at": item.last_write_at,
+                }
+                for item in client_registry().snapshot()
+            ],
+            "claim": None
+            if claim is None
+            else {
+                "pid": claim.pid,
+                "transport": claim.transport,
+                "url": claim.url,
+                "started": claim.started,
+                "alive": living_claim() is not None,
+            },
+        }
+        if json_output:
+            print(json.dumps(payload, indent=2, default=str))
+        else:
+            console.print(format_client_report(client_registry().snapshot()))
+            if claim is None:
+                console.print("Shared server claim: none")
+            else:
+                console.print(
+                    f"Shared server claim: pid {claim.pid} {claim.transport} {claim.url} "
+                    f"(alive={living_claim() is not None})"
+                )
+        return
 
     try:
         validate_routing_flags(local, cloud)

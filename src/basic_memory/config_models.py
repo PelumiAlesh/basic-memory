@@ -16,6 +16,7 @@ from basic_memory.config_migrations import (
     migrate_legacy_projects,
     migrate_legacy_sync_fields,
 )
+from basic_memory.shared_memory.privacy import ClientVisibilityPolicy
 from basic_memory.utils import generate_permalink
 
 
@@ -731,6 +732,235 @@ class BasicMemoryConfig(BaseSettings):
     default_workspace: Optional[str] = Field(
         default=None,
         description="Default cloud workspace tenant_id. Set by 'bm cloud workspace set-default'.",
+    )
+
+    # --- Shared-memory fork features ---
+    # Each flag keeps upstream behavior when left at its default, except where
+    # the feature itself specifies a new default (localhost bind, inactive
+    # search exclusion). See docs/SHARED_MEMORY.md.
+
+    record_provenance: bool = Field(
+        default=True,
+        description=(
+            "On MCP write and edit, record source_client, updated, and "
+            "created_by_client in frontmatter when the client identifies itself. "
+            "Writes with no clientInfo are unchanged. "
+            "Env: BASIC_MEMORY_RECORD_PROVENANCE"
+        ),
+    )
+
+    mcp_http_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Host the MCP HTTP and SSE transports bind to when --host is omitted. "
+            "Defaults to loopback. Set 0.0.0.0 only together with a bearer token. "
+            "Env: BASIC_MEMORY_MCP_HTTP_HOST"
+        ),
+    )
+    mcp_http_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Bearer token required on MCP HTTP/SSE when set. Prefer "
+            "BASIC_MEMORY_MCP_HTTP_TOKEN. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN"
+        ),
+    )
+    mcp_http_token_client: str = Field(
+        default="http",
+        description=(
+            "Client slug recorded for requests that present mcp_http_token. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN_CLIENT"
+        ),
+    )
+    mcp_http_clients: str = Field(
+        default="",
+        description=(
+            "Additional bearer tokens as comma-separated client:token pairs, "
+            "for example chatgpt:secret. The token is a secret and is never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_CLIENTS"
+        ),
+    )
+    mcp_http_allowed_hosts: str = Field(
+        default="",
+        description=(
+            "Comma-separated hostnames accepted in the Host header of MCP HTTP requests, "
+            "in addition to loopback and the bound address. Required for a tunnel "
+            "hostname such as memory.example.com. Other hosts get 421. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS"
+        ),
+    )
+    mcp_http_allowed_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated browser origins accepted in the Origin header of MCP HTTP "
+            "requests, in addition to same-origin and loopback. Others get 403. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS"
+        ),
+    )
+    mcp_oauth_issuer: Optional[str] = Field(
+        default=None,
+        description=(
+            "External OAuth 2.1 authorization-server URL advertised at "
+            "/.well-known/oauth-protected-resource. This server does not mint "
+            "tokens. Env: BASIC_MEMORY_MCP_OAUTH_ISSUER"
+        ),
+    )
+
+    brief_profile_note: str = Field(
+        default="me/profile",
+        description="Permalink or title of the profile note included in get_brief. Env: BASIC_MEMORY_BRIEF_PROFILE_NOTE",
+    )
+    brief_state_note: str = Field(
+        default="project/state",
+        description="Permalink or title of the current-state note included in get_brief. Env: BASIC_MEMORY_BRIEF_STATE_NOTE",
+    )
+    brief_decision_days: int = Field(
+        default=14,
+        description="How many days of decision notes get_brief includes. Env: BASIC_MEMORY_BRIEF_DECISION_DAYS",
+        gt=0,
+    )
+    brief_token_budget: int = Field(
+        default=1500,
+        description="Default token budget for get_brief. Roughly four characters per token. Env: BASIC_MEMORY_BRIEF_TOKEN_BUDGET",
+        gt=0,
+    )
+
+    hook_project_brief: bool = Field(
+        default=True,
+        description=(
+            "Include the get_brief project briefing in the session-start hook output "
+            "(Claude Code, Codex, Cursor) for the pinned project, inside the hook's "
+            "size budget. Env: BASIC_MEMORY_HOOK_PROJECT_BRIEF"
+        ),
+    )
+
+    review_inbox_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, MCP-created notes are marked unreviewed or placed in the inbox folder. "
+            "Existing notes are left alone. Env: BASIC_MEMORY_REVIEW_INBOX_ENABLED"
+        ),
+    )
+    review_inbox_mode: Literal["status", "folder"] = Field(
+        default="status",
+        description=(
+            "status sets frontmatter status: unreviewed on create. "
+            "folder writes notes with an empty directory into review_inbox_folder. "
+            "Env: BASIC_MEMORY_REVIEW_INBOX_MODE"
+        ),
+    )
+    review_inbox_folder: str = Field(
+        default="inbox",
+        description="Folder used when review_inbox_mode is folder. Env: BASIC_MEMORY_REVIEW_INBOX_FOLDER",
+    )
+
+    conflict_check_on_write: bool = Field(
+        default=True,
+        description=(
+            "When writing a decision or preference note, include similar active notes "
+            "flagged as possible conflicts in the tool response. "
+            "Env: BASIC_MEMORY_CONFLICT_CHECK_ON_WRITE"
+        ),
+    )
+    search_recency_weight: float = Field(
+        default=0.0,
+        description=(
+            "Blend search scores with recency. 0 (default) leaves ranking unchanged. "
+            "1 multiplies by an exponential decay with search_recency_half_life_days. "
+            "Applies inside a bounded candidate window, not the whole project. "
+            "Env: BASIC_MEMORY_SEARCH_RECENCY_WEIGHT"
+        ),
+        ge=0.0,
+        le=1.0,
+    )
+    search_recency_half_life_days: float = Field(
+        default=30.0,
+        description=(
+            "Age in days at which recency weighting halves a score. "
+            "Env: BASIC_MEMORY_SEARCH_RECENCY_HALF_LIFE_DAYS"
+        ),
+        gt=0,
+    )
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After write_note, edit_note, move_note, and delete_note, read the note back "
+            "from the index and from disk and report verified, pending, or failed. "
+            "Env: BASIC_MEMORY_VERIFY_WRITES"
+        ),
+    )
+
+    git_autocommit: bool = Field(
+        default=False,
+        description=(
+            "After an MCP write or edit, commit the note file in the project git "
+            "repository. Debounced. Never pushes unless git_auto_push is true and "
+            "a remote exists. Env: BASIC_MEMORY_GIT_AUTOCOMMIT"
+        ),
+    )
+    git_autocommit_debounce_seconds: float = Field(
+        default=2.0,
+        description="How long to wait for more writes before one commit. Env: BASIC_MEMORY_GIT_AUTOCOMMIT_DEBOUNCE_SECONDS",
+        ge=0,
+    )
+    git_auto_push: bool = Field(
+        default=False,
+        description=(
+            "Push after a post-write agent commit or undo. Off by default: note "
+            "content never leaves the machine unless this is set and the repository "
+            "has a remote. Pre-write snapshots are never pushed. "
+            "Env: BASIC_MEMORY_GIT_AUTO_PUSH"
+        ),
+    )
+
+    client_visibility: Dict[str, ClientVisibilityPolicy] = Field(
+        default_factory=dict,
+        description=(
+            "Per-client read policy keyed by the provenance client slug or the "
+            "bearer-token client. Example: chatgpt denies private and a folder. "
+            "When any policy exists, an unknown client may read only shareable notes. "
+            "Empty (default) does not filter. Env: BASIC_MEMORY_CLIENT_VISIBILITY as JSON."
+        ),
+    )
+
+    care_oversized_bytes: int = Field(
+        default=100_000,
+        description=(
+            "bm care flags markdown files larger than this. "
+            "Env: BASIC_MEMORY_CARE_OVERSIZED_BYTES"
+        ),
+        gt=0,
+    )
+
+    search_exclude_inactive: bool = Field(
+        default=True,
+        description=(
+            "Hide notes with status superseded or archived from discovery search. "
+            "Exact permalink lookup still finds them. Pass include_inactive=true to "
+            "search them. Env: BASIC_MEMORY_SEARCH_EXCLUDE_INACTIVE"
+        ),
+    )
+
+    mcp_shared_server: bool = Field(
+        default=False,
+        description=(
+            "Run one long-lived MCP HTTP server for every local client. When true, "
+            "streamable-http/SSE claim a pidfile under the config dir, serialize "
+            "canonical note writes in-process, and refuse a second MCP process "
+            "(including stdio) against the same install with a clear error. "
+            "Default false keeps single-client stdio unchanged. "
+            "Env: BASIC_MEMORY_MCP_SHARED_SERVER"
+        ),
+    )
+
+    session_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "On Cursor stop / Claude Stop or SessionEnd, write a short private "
+            "session summary into the review inbox (status unreviewed). Off by "
+            "default. Idempotent per harness session id. Does not copy private "
+            "note bodies. Env: BASIC_MEMORY_SESSION_CAPTURE_ENABLED"
+        ),
     )
 
     # Legacy config keys / env vars mapped to their renamed fields.

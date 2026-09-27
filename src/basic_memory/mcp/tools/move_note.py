@@ -11,6 +11,14 @@ from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
 from basic_memory.mcp.server import mcp
+from basic_memory.mcp.write_verification import read_back, verify_note_move
+from basic_memory.shared_memory.git_sync import (
+    GitMemoryError,
+    schedule_autocommit,
+    snapshot_before_write,
+)
+from basic_memory.shared_memory.request_client import current_client_slug
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
 from basic_memory.schemas.project_info import ProjectItem
 from basic_memory.utils import (
@@ -598,7 +606,22 @@ move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in dest
                     if is_memory_url
                     else resolved_identifier
                 )
-                result = await knowledge_client.move_directory(source_directory, destination_path)
+                if ConfigManager().config.git_autocommit and active_project.home:
+                    try:
+                        snapshot_before_write(
+                            Path(active_project.home),
+                            source_directory,
+                            client=current_client_slug(),
+                            note=source_directory,
+                            operation="directory move",
+                            enabled=True,
+                        )
+                    except GitMemoryError as exc:
+                        logger.warning(f"git snapshot skipped: {exc}")
+                async with canonical_write_slot(enabled=ConfigManager().config.mcp_shared_server):
+                    result = await knowledge_client.move_directory(
+                        source_directory, destination_path
+                    )
                 if output_format == "json":
                     return {
                         "moved": result.total_files > 0 and result.failed_moves == 0,
@@ -934,8 +957,29 @@ move_note("{identifier}", destination_folder="notes")
             # Resolve identifier only if earlier checks could not.
             resolved_entity_id = await _ensure_resolved_entity_id()
 
+            # The pre-move read gives the source path for the git snapshot and for
+            # verifying the vacated path afterwards.
+            app_config = ConfigManager().config
+            source_file_path: str | None = None
+            if app_config.verify_writes or app_config.git_autocommit:
+                before_entity = await read_back(knowledge_client, resolved_entity_id)
+                source_file_path = before_entity.file_path if before_entity else None
+            if app_config.git_autocommit and source_file_path and active_project.home:
+                try:
+                    snapshot_before_write(
+                        Path(active_project.home),
+                        source_file_path,
+                        client=current_client_slug(),
+                        note=source_file_path,
+                        operation="move",
+                        enabled=True,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git snapshot skipped: {exc}")
+
             # Call the move API using KnowledgeClient
-            result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
+            async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
 
             # --- Outcome validation (honest success backstop) ---
             # Trigger: the resulting file_path differs from the destination the caller
@@ -994,26 +1038,60 @@ move_note("{identifier}", destination_folder="notes")
                     ```
                     """).strip()
 
+            if app_config.git_autocommit and active_project.home:
+                try:
+                    schedule_autocommit(
+                        Path(active_project.home),
+                        result.file_path,
+                        client=current_client_slug(),
+                        note=result.title,
+                        enabled=True,
+                        debounce_seconds=app_config.git_autocommit_debounce_seconds,
+                        auto_push=app_config.git_auto_push,
+                        extra_paths=(source_file_path,) if source_file_path else (),
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git autocommit skipped: {exc}")
+
+            verification = None
+            if app_config.verify_writes and result.external_id:
+                verification = await verify_note_move(
+                    knowledge_client,
+                    external_id=result.external_id,
+                    source_path=source_file_path,
+                    destination_path=result.file_path,
+                    project_home=active_project.home,
+                )
+
             if output_format == "json":
-                return {
-                    "moved": True,
+                payload: dict[str, Any] = {
+                    "moved": verification is None or verification.status != "failed",
                     "title": result.title,
                     "permalink": result.permalink,
                     "file_path": result.file_path,
                     "source": identifier,
                     "destination": destination_path,
                 }
+                if verification is not None:
+                    payload["verification"] = verification.as_dict()
+                    if verification.status == "failed":
+                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                return payload
 
             # Build success message
+            heading = "✅ Note moved successfully"
+            if verification is not None and verification.status == "failed":
+                heading = "⚠️ Note move reported but verification failed"
             result_lines = [
-                "✅ Note moved successfully",
+                heading,
                 "",
                 f"📁 **{identifier}** → **{result.file_path}**",
                 f"🔗 Permalink: {result.permalink}",
                 "📊 Database and search index updated",
-                "",
-                f"<!-- Project: {active_project.name} -->",
             ]
+            if verification is not None:
+                result_lines.append(verification.as_text())
+            result_lines += ["", f"<!-- Project: {active_project.name} -->"]
 
             # Log the operation
             logger.debug(

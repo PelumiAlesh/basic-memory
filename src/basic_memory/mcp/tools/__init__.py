@@ -7,11 +7,14 @@ all tools with the MCP server.
 
 # Import tools to register them with MCP
 from basic_memory.mcp.tools.basic_memory_diagnostics import basic_memory_diagnostics
+from basic_memory.mcp.tools.brief import get_brief
 from basic_memory.mcp.tools.delete_note import delete_note
+from basic_memory.mcp.tools.list_clients import list_clients
 from basic_memory.mcp.tools.read_content import read_content
 from basic_memory.mcp.tools.build_context import build_context
 from basic_memory.mcp.tools.recent_activity import recent_activity
 from basic_memory.mcp.tools.read_note import read_note
+from basic_memory.mcp.tools.review_tools import review_note, review_queue
 
 # TODO: re-enable once MCP client rendering is working
 # from basic_memory.mcp.tools.ui_sdk import read_note_ui, search_notes_ui
@@ -40,6 +43,7 @@ from basic_memory.mcp.tools.schema import schema_validate, schema_infer, schema_
 __all__ = [
     "basic_memory_diagnostics",
     "build_context",
+    "get_brief",
     "cat",
     "create_memory_project",
     "delete_note",
@@ -48,6 +52,7 @@ __all__ = [
     "fetch",
     "find",
     "grep",
+    "list_clients",
     "list_directory",
     "list_memory_projects",
     "list_workspaces",
@@ -56,6 +61,8 @@ __all__ = [
     "move_note",
     "read_content",
     "read_note",
+    "review_note",
+    "review_queue",
     # "read_note_ui",
     "recent_activity",
     "schema_diff",

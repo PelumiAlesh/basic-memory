@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import logfire
 
 from basic_memory import db
+from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.conflicts import INACTIVE_STATUSES
 from basic_memory.indexing.relation_resolution import RelationSearchRefreshResult
 from basic_memory.models import Entity
 from basic_memory.repository import EntityRepository
@@ -176,6 +178,23 @@ def prepare_search_query(query: SearchQuery) -> PreparedSearchQuery | None:
         if query.status:
             metadata_filters.setdefault("status", query.status)
 
+    # Trigger: a discovery search, not an exact permalink or an explicit status filter.
+    # Why: superseded and archived notes stay in the graph but should not answer
+    # ordinary search. NULL status stays visible; NOT IN would have dropped it.
+    # Outcome: the reader adds a status exclusion unless the caller opted in
+    # or the config flag is off.
+    exclude_statuses = None
+    metadata_sets_status = bool(query.metadata_filters and "status" in query.metadata_filters)
+    status_is_set = bool(query.status and str(query.status).strip())
+    if (
+        ConfigManager().config.search_exclude_inactive
+        and not query.include_inactive
+        and not query.permalink
+        and not status_is_set
+        and not metadata_sets_status
+    ):
+        exclude_statuses = INACTIVE_STATUSES
+
     prepared = PreparedSearchQuery(
         search_text=search_text,
         permalink=query.permalink,
@@ -194,6 +213,7 @@ def prepare_search_query(query: SearchQuery) -> PreparedSearchQuery | None:
         temporal=build_temporal_filter(query),
         retrieval_mode=query.retrieval_mode or SearchRetrievalMode.FTS,
         min_similarity=query.min_similarity,
+        exclude_statuses=exclude_statuses,
     )
 
     has_criteria = bool(
@@ -478,15 +498,47 @@ class SearchService:
             allow_relaxed = self._is_relaxed_fts_fallback_eligible(
                 query, strict_search_text, prepared.retrieval_mode
             )
+            # Trigger: search_recency_weight is above zero.
+            # Why: the ranking window has to be wider than the page or a newer
+            # note just past the page can never move up. Weight 0 keeps the
+            # original limit and offset, so the default path is unchanged.
+            # Outcome: re-rank that window and return the requested slice.
+            recency_weight = ConfigManager().config.search_recency_weight
+            fetch_limit = limit
+            fetch_offset = offset
+            if recency_weight > 0:
+                fetch_limit = min(max(limit + offset, 1) + 50, 200)
+                fetch_offset = 0
             results = await self._search_repository(
                 prepared,
                 search_text=strict_search_text,
-                limit=limit,
-                offset=offset,
+                limit=fetch_limit,
+                offset=fetch_offset,
                 allow_relaxed=allow_relaxed,
                 session=session,
                 trace=trace,
             )
+            if prepared.exclude_statuses:
+                hidden = set(prepared.exclude_statuses)
+
+                def _inactive(row: SearchIndexRow) -> bool:
+                    # FTS already applied this in SQL. Vector rows that still
+                    # carry the status in metadata are dropped here. The
+                    # exclusion is not a has_filters predicate, so an ordinary
+                    # vector search keeps its unfiltered code path.
+                    status = (row.metadata or {}).get("status")
+                    return isinstance(status, str) and status.strip().lower() in hidden
+
+                results = [row for row in results if not _inactive(row)]
+            if recency_weight > 0:
+                from basic_memory.shared_memory.recency import apply_recency
+
+                ranked = apply_recency(
+                    list(results),
+                    weight=recency_weight,
+                    half_life_days=ConfigManager().config.search_recency_half_life_days,
+                )
+                results = ranked[offset : offset + limit]
 
         return results
 

@@ -4,6 +4,145 @@
 
 ### Features
 
+- Shared MCP server mode (`mcp_shared_server`, default false). One long-running
+  HTTP process is the supported path for several local clients against one
+  vault. The process claims a pidfile under the config dir, serializes
+  canonical note writes in-process (SQLite WAL still serves concurrent reads),
+  and refuses a second MCP process with a clear message. `list_clients` and
+  `bm status --shared` show client slugs and last writes; tokens are never
+  logged. Single-client stdio is unchanged until the flag is on.
+
+- End-of-session capture (`session_capture_enabled`, default false). Cursor
+  `stop` and Claude Code `Stop`/`SessionEnd` write a short private,
+  unreviewed session summary into the review inbox, idempotent per session
+  id. Codex `stop` stays a continue no-op. Does not copy private note bodies.
+
+- Write verification. After `write_note`, `edit_note`, `move_note`, and
+  `delete_note`, the tool reads the note back from the index and, for a local
+  project, from disk after draining pending materialization. The response
+  ends with a `## Verification` section (`verification` in JSON) whose status
+  is `verified`, `pending`, or `failed`, and a failed verdict names the reason:
+  content missing, truncated, duplicated, mismatched, file missing, or file
+  differing from the accepted note. A failed verdict sets
+  `error: WRITE_VERIFICATION_FAILED` in JSON and `moved`/`deleted` to false.
+  `verify_writes` (default `true`) turns it off. Addresses the false "saved"
+  reports in upstream #1341, #1531, #1479, and #1585.
+
+- Git autocommit now commits before a destructive write. When `git_autocommit`
+  is on, an overwrite, edit, move, or delete first commits the current file
+  (or directory) as `memory(<client>): snapshot <note> before <operation>`, so
+  the previous content is in history before the API changes it (upstream
+  #1156). Snapshots are never pushed. `bm undo` also restores files from a
+  snapshot HEAD when the only uncommitted changes are to those files, so an
+  overwrite is undoable before its own commit lands. Moves and deletes are
+  committed after the write as well. `git_auto_push` stays off by default.
+
+- `bm import claude transcripts [path]` imports Claude Code session transcripts
+  (the JSONL files under `~/.claude/projects`, which Claude Code prunes after
+  about thirty days; upstream #1527). Each session becomes one
+  `type: conversation` note under `conversations/claude-code/` with the
+  session id, cwd, branch, start and end times in frontmatter. Human and
+  assistant prose are kept; tool calls, tool results, meta frames, and
+  subagent sidechains are dropped. Re-runs skip notes that already exist
+  (`--include-existing` rewrites them); `--since-days N` limits the scan.
+
+- `bm import notion <zip-or-folder>` imports a Notion Markdown & CSV export
+  under `imports/notion/` (override with `--destination`). Notion's
+  32-character id suffixes are stripped from file and folder names, relative
+  links become wiki links, and each database CSV row becomes a note whose
+  frontmatter is the row's properties. A sibling `*_all.csv` is skipped when
+  the plain CSV is present. Zip entries that escape the destination are
+  rejected.
+
+- Cursor hooks. `bm hook` accepts `--harness cursor` and normalizes Cursor's
+  stdin (`conversation_id`, `generation_id`, `workspace_roots`,
+  `hook_event_name`). `sessionStart` prints `{"additional_context": ...}` so
+  the brief is injected. `bm hook install --harness cursor` and
+  `bm install cursor` write `~/.cursor/hooks.json` (`sessionStart`,
+  `preCompact`). Project routing is `.cursor/basic-memory.json`
+  (`primaryProject`). Cloud agents do not run user-level `sessionStart`; copy
+  the entries into the project's `.cursor/hooks.json` for those.
+
+- Optional git autocommit (`git_autocommit`, default false). After an MCP write
+  or edit, the note file is committed in the project repository, debounced by
+  `git_autocommit_debounce_seconds` (default 2). The message is
+  `memory(<client>): update <note>`. `bm history <note>` shows that file's
+  log. `bm undo` reverts the last agent commit and refuses any other HEAD or
+  a dirty tree. Nothing is pushed unless `git_auto_push` is true and the
+  repository has a remote.
+
+- Notes can set `visibility: private|work|shareable`. `client_visibility`
+  (empty by default, so nothing is filtered) maps a client slug or bearer-token
+  identity to `deny_visibility` and `deny_path_prefixes`. The check runs on
+  read, search, brief, read_content, the note resource, and build_context.
+  When any policy exists, an unknown client may read only `shareable` notes,
+  and a missing or unrecognized visibility counts as private. A denial returns
+  no note body.
+
+- Optional search recency weighting (`search_recency_weight`, default 0, so
+  ranking is unchanged). When set, scores blend with an exponential decay
+  (`search_recency_half_life_days`, default 30) inside a bounded candidate
+  window. `bm care` reports notes past `review_by`, notes missing
+  `source_client`, orphans (via `bm orphans`), and files larger than
+  `care_oversized_bytes` (default 100000). `bm doctor` remains the
+  file-to-database check.
+
+- Writing a `decision` or `preference` note returns similar active notes flagged
+  `possible conflict` when `conflict_check_on_write` is true (the default).
+  Set it false to keep only the existing similar-note hint on create.
+  Discovery search hides `status: superseded` and `status: archived` when
+  `search_exclude_inactive` is true (the default). Pass `include_inactive=true`
+  or an explicit `status` filter to see them. Exact permalink lookup is
+  unchanged. A `supersedes` frontmatter value (string or list of permalinks
+  or titles) marks those notes `status: superseded` after the write.
+
+- Optional review inbox (`review_inbox_enabled`, default false). In `status`
+  mode (the default) MCP-created notes with no caller-supplied status get
+  `status: unreviewed`. In `folder` mode, notes with an empty directory land
+  in `review_inbox_folder` (default `inbox/`). Updates do not re-queue a note.
+  `bm review` and the `review_queue` / `review_note` MCP tools list, promote
+  (`status: reviewed`), merge into another note, or discard.
+
+- The session-start hook (Claude Code, Codex, Cursor) now carries the
+  `get_brief` briefing for the pinned project automatically, as a second
+  fenced data block after the existing #686 session brief and inside the same
+  10,000-character budget, so the agent does not have to call a tool. The
+  token budget is `briefTokenBudget` in the harness settings, else
+  `brief_token_budget`, capped to the room left. `hook_project_brief=false`
+  or `"projectBrief": false` in the harness file turns it off. MCP server
+  instructions now point clients without hooks at `memory://_brief/<project>`.
+
+- `get_brief(project, token_budget)` and the `memory://_brief/{project}` resource
+  return a bounded briefing for clients without hooks: the profile note
+  (`brief_profile_note`, default `me/profile`), the current-state note
+  (`brief_state_note`, default `project/state`), decisions from the last
+  `brief_decision_days` (default 14), open-question and unreviewed counts, and
+  notes updated in the last seven days. The default budget is
+  `brief_token_budget` (1500). Later sections are dropped first.
+
+- MCP HTTP and SSE transports check Host and Origin on every request
+  (FastMCP's guard in strict mode). The Host must be loopback, the bound
+  address, or a name in `mcp_http_allowed_hosts` (421 otherwise); a browser
+  Origin must be same-origin, loopback, or in `mcp_http_allowed_origins`
+  (403 otherwise). A tunnel hostname belongs in `mcp_http_allowed_hosts`.
+
+- MCP HTTP and SSE transports bind to `127.0.0.1` by default (`mcp_http_host`,
+  or `--host` to override). Set `BASIC_MEMORY_MCP_HTTP_TOKEN` or
+  `mcp_http_clients` (`client:token` pairs) to require a bearer token; the
+  token is never logged. A non-loopback bind without a token logs a warning.
+  `/.well-known/oauth-protected-resource` advertises bearer auth and, when
+  `mcp_oauth_issuer` is set, an external OAuth 2.1 authorization server. This
+  process does not mint tokens. See `docs/SHARED_MEMORY.md` for the ChatGPT
+  streamable-HTTP setup.
+
+- MCP writes and edits record which client wrote the note when that client
+  sends `clientInfo` and `record_provenance` is on (the default). Frontmatter
+  gains `source_client` and `updated` on every such write, and
+  `created_by_client` on the first write only. Later edits keep the original
+  creator. Search text results list those fields when the index has them.
+  Anonymous writes (no client identity) are unchanged. Cloud `created_by`
+  remains the account id. Turn the stamp off with `record_provenance=false`.
+
 - **#1558**: `QUERY /v2/search/` (and `POST /v2/search/` for clients that cannot send
   QUERY) searches an explicit set of projects in one database with one query. The body
   is the project search body plus `project_ids`, a required list of internal ids the

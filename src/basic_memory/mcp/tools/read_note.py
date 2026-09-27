@@ -58,6 +58,23 @@ def _exact_external_id(identifier: str) -> str | None:
         return None
 
 
+def _visible_search_candidates(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Drop search suggestions the current client is not allowed to see."""
+    from basic_memory.mcp.privacy_gate import current_access, note_visible
+
+    if current_access().unrestricted:
+        return candidates
+    visible: list[dict[str, object]] = []
+    for candidate in candidates:
+        metadata = candidate.get("metadata")
+        meta = cast("dict[str, Any]", metadata) if isinstance(metadata, dict) else {}
+        file_path = candidate.get("file_path")
+        path = file_path if isinstance(file_path, str) else None
+        if note_visible(meta, path):
+            visible.append(candidate)
+    return visible
+
+
 @mcp.tool(
     title="Read Note",
     description="Read a markdown note by title or permalink, optionally a numbered line range.",
@@ -178,6 +195,9 @@ async def read_note(
     # Why: both flow into the fallback search's server-side slicing, where
     #      non-positive values produce empty result pages with unreachable
     #      pagination. Fail fast, matching search_notes/build_context.
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
     if page < 1:
         raise ValueError(f"page must be >= 1, got {page}")
     if page_size < 1:
@@ -279,6 +299,21 @@ async def read_note(
                     include_frontmatter=include_frontmatter,
                     lines=lines_param,
                 )
+                from basic_memory.mcp.privacy_gate import denial_for
+
+                denial = denial_for(payload.get("frontmatter"), payload.get("file_path"))
+                if denial is not None:
+                    if output_format == "json":
+                        return {
+                            "title": None,
+                            "permalink": None,
+                            "file_path": None,
+                            "content": None,
+                            "frontmatter": None,
+                            "error": "NOT_VISIBLE",
+                            "message": denial,
+                        }
+                    return denial
                 if not line_scan:
                     return dict(payload)
                 first = payload["start_line"]
@@ -437,6 +472,11 @@ async def read_note(
                             "Returning read_note result from resource: {path}",
                             path=entity_path,
                         )
+                        from basic_memory.mcp.privacy_gate import denial_for_markdown
+
+                        denial = denial_for_markdown(response.text, entity_path)
+                        if denial is not None:
+                            return denial
                         return response.text
                 except Exception as error:  # pragma: no cover
                     logger.info(f"Direct lookup failed for '{entity_path}': {error}")
@@ -452,7 +492,7 @@ async def read_note(
                 title_results = await _search_candidates(
                     identifier, title_only=True, lookup_page=lookup_page
                 )
-                title_candidates = _search_results(title_results)
+                title_candidates = _visible_search_candidates(_search_results(title_results))
                 if not title_candidates:
                     logger.info(
                         f"No results in title search for: {identifier} "
@@ -501,6 +541,11 @@ async def read_note(
                         logger.debug(
                             f"Found note by exact title search: {_result_permalink(result)}"
                         )
+                        from basic_memory.mcp.privacy_gate import denial_for_markdown
+
+                        denial = denial_for_markdown(response.text, _result_file_path(result))
+                        if denial is not None:
+                            return denial
                         return response.text
                 except Exception as error:  # pragma: no cover
                     logger.info(
@@ -513,7 +558,7 @@ async def read_note(
             text_results = await _search_candidates(identifier, title_only=False)
 
             # We didn't find a direct match, construct a helpful error message
-            text_candidates = _search_results(text_results)
+            text_candidates = _visible_search_candidates(_search_results(text_results))
             if not text_candidates:
                 if output_format == "json":
                     return _not_found_json_payload()

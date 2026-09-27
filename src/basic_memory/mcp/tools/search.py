@@ -14,6 +14,7 @@ from fastmcp import Context
 from pydantic import AliasChoices, BeforeValidator, Field
 
 from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.provenance import provenance_lines
 from basic_memory.utils import (
     build_canonical_permalink,
     coerce_dict,
@@ -69,6 +70,7 @@ def _build_search_query(
     valid_at: str | None,
     valid_overlaps: str | None,
     time_kind: str | None,
+    include_inactive: bool = False,
 ) -> SearchQuery | None:
     """Map tool parameters onto one ``SearchQuery``; ``None`` when nothing narrows the search.
 
@@ -130,6 +132,7 @@ def _build_search_query(
         search_query.valid_overlaps = valid_overlaps
     if time_kind is not None:
         search_query.time_kind = time_kind
+    search_query.include_inactive = include_inactive
 
     if search_query.no_criteria():
         return None
@@ -545,6 +548,8 @@ def _format_search_markdown(
         if r.external_id:
             parts.append(f"- external_id: {r.external_id}")
         parts.append(f"- score: {r.score:.4f}")
+        for line in provenance_lines(r.metadata):
+            parts.append(f"- {line}")
         if r.matched_chunk:
             parts.append(f"- match: {r.matched_chunk[:200]}")
         # Name the kind and the units. A bare "2026-06-10" here would read as an edit
@@ -805,6 +810,7 @@ async def _search_all_projects(
     context: Context | None,
     compact: bool = False,
     projects: list[str] | None = None,
+    include_inactive: bool = False,
 ) -> dict[str, Any] | str:
     """Search every accessible project, one query per database.
 
@@ -851,6 +857,7 @@ async def _search_all_projects(
         valid_at=valid_at,
         valid_overlaps=valid_overlaps,
         time_kind=time_kind,
+        include_inactive=include_inactive,
     )
     if search_query is None:
         return _NO_SEARCH_CRITERIA_MESSAGE
@@ -902,6 +909,9 @@ async def _search_all_projects(
             continue
 
         databases_answered += 1
+        from basic_memory.mcp.privacy_gate import restrict_search_response
+
+        response = restrict_search_response(response)
         if compact:
             response = _compact_search_response(response)
         if response.query_hint:
@@ -1115,6 +1125,12 @@ async def search_notes(
         bool,
         "Omit note bodies and matched excerpts from results. Keep identifiers, metadata, "
         "relation targets, scores and pagination for discovery, then read selected notes.",
+    ] = False,
+    include_inactive: Annotated[
+        bool,
+        "When false (the default), notes with status superseded or archived are "
+        "left out of discovery search. Set true to include them. Exact permalink "
+        "lookup always includes them.",
     ] = False,
 ) -> dict[str, Any] | str:
     """Search across all content in the knowledge base with comprehensive syntax support.
@@ -1390,6 +1406,9 @@ async def search_notes(
     #      uncapped SQLite LIMIT. Mirrors recent_activity's guard so all navigation
     #      tools reject invalid pagination consistently.
     # Outcome: caller gets an explicit ValueError instead of a silent bad payload.
+    from basic_memory.shared_memory.request_client import remember_mcp_client
+
+    await remember_mcp_client(context)
     if page < 1:
         raise ValueError(f"page must be >= 1, got {page}")
     if page_size < 1:
@@ -1501,6 +1520,7 @@ async def search_notes(
             context=context,
             compact=compact,
             projects=projects,
+            include_inactive=include_inactive,
         )
         return all_projects_result
 
@@ -1570,6 +1590,7 @@ async def search_notes(
                     valid_at=valid_at,
                     valid_overlaps=valid_overlaps,
                     time_kind=time_kind,
+                    include_inactive=include_inactive,
                 )
                 if search_query is None:
                     return _NO_SEARCH_CRITERIA_MESSAGE
@@ -1604,6 +1625,9 @@ async def search_notes(
                     if guidance is not None:
                         return guidance
 
+                from basic_memory.mcp.privacy_gate import restrict_search_response
+
+                result = restrict_search_response(result)
                 if compact:
                     result = _compact_search_response(result)
                 if output_format == "json":
