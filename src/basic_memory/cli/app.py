@@ -172,7 +172,9 @@ def app_callback(
 import_app = typer.Typer(help="Import data from various sources")
 app.add_typer(import_app, name="import")
 
-claude_app = typer.Typer(help="Import Conversations from Claude JSON export.")
+claude_app = typer.Typer(
+    help="Import Claude.ai exports and Claude Code session transcripts.",
+)
 import_app.add_typer(claude_app, name="claude")
 
 

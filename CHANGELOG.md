@@ -81,6 +81,15 @@
   `bm review` and the `review_queue` / `review_note` MCP tools list, promote
   (`status: reviewed`), merge into another note, or discard.
 
+- The session-start hook (Claude Code, Codex, Cursor) now carries the
+  `get_brief` briefing for the pinned project automatically, as a second
+  fenced data block after the existing #686 session brief and inside the same
+  10,000-character budget, so the agent does not have to call a tool. The
+  token budget is `briefTokenBudget` in the harness settings, else
+  `brief_token_budget`, capped to the room left. `hook_project_brief=false`
+  or `"projectBrief": false` in the harness file turns it off. MCP server
+  instructions now point clients without hooks at `memory://_brief/<project>`.
+
 - `get_brief(project, token_budget)` and the `memory://_brief/{project}` resource
   return a bounded briefing for clients without hooks: the profile note
   (`brief_profile_note`, default `me/profile`), the current-state note
