@@ -53,7 +53,6 @@ class PreparedSearchQuery:
                 self.metadata_filters,
                 self.file_path_prefix,
                 self.temporal,
-                self.exclude_statuses,
             )
         )
 

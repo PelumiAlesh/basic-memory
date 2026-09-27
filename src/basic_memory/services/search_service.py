@@ -518,6 +518,18 @@ class SearchService:
                 session=session,
                 trace=trace,
             )
+            if prepared.exclude_statuses:
+                hidden = set(prepared.exclude_statuses)
+
+                def _inactive(row: SearchIndexRow) -> bool:
+                    # FTS already applied this in SQL. Vector rows that still
+                    # carry the status in metadata are dropped here. The
+                    # exclusion is not a has_filters predicate, so an ordinary
+                    # vector search keeps its unfiltered code path.
+                    status = (row.metadata or {}).get("status")
+                    return isinstance(status, str) and status.strip().lower() in hidden
+
+                results = [row for row in results if not _inactive(row)]
             if recency_weight > 0:
                 from basic_memory.shared_memory.recency import apply_recency
 

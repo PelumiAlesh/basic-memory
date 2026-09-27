@@ -46,10 +46,14 @@ async def _search_lines(
     search: Any, query: SearchQuery, *, page_size: int
 ) -> tuple[list[str], int]:
     response = await search.search(query.model_dump(mode="json"), page=1, page_size=page_size)
-    from basic_memory.mcp.privacy_gate import note_visible
+    from basic_memory.mcp.privacy_gate import current_access, note_visible
 
     visible = [hit for hit in response.results if note_visible(hit.metadata, hit.file_path)]
     lines = [_hit_line(hit.title, hit.permalink) for hit in visible]
+    # The server total counts notes this client may not see. Use it only when
+    # nothing on the page was hidden; otherwise report the visible page.
+    if current_access().unrestricted or len(visible) == len(response.results):
+        return lines, response.total
     return lines, len(visible)
 
 
@@ -128,7 +132,7 @@ async def build_brief(
                 entity_types=[SearchItemType.ENTITY],
                 retrieval_mode=SearchRetrievalMode.FTS,
             ),
-            page_size=1,
+            page_size=_LIST_LIMIT,
         )
         question_body = "\n".join(question_lines) or "(none)"
         sections.append(

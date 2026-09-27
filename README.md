@@ -47,6 +47,16 @@ search.
   demand — no wasted context trying things to see what they do.
 - **Cloud, optional.** Sync across devices when you want — never required.
 
+### One vault, several clients
+
+This tree can record which client wrote a note, bind MCP HTTP to localhost
+with an optional bearer token, brief clients that have no hooks, queue
+tool-written notes for review, flag conflicting decisions, and keep private
+notes off a given client. See [docs/SHARED_MEMORY.md](docs/SHARED_MEMORY.md)
+for the flags. Existing behavior stays in place until you turn a flag on,
+except HTTP (loopback by default) and search (superseded and archived notes
+are hidden unless you ask for them).
+
 ## Get started
 
 Pick the path that fits you. Both run the same product on the same Markdown.

@@ -119,13 +119,20 @@ def _flush(key: str) -> None:
         _timers.pop(key, None)
     if batch is None:
         return
-    commit_files(
-        batch.root,
-        batch.files,
-        client=batch.client,
-        notes=batch.notes,
-        auto_push=batch.auto_push,
-    )
+    # A commit failure must not crash the timer thread. The note write already
+    # succeeded; the message is scrubbed before it is logged.
+    try:
+        commit_files(
+            batch.root,
+            batch.files,
+            client=batch.client,
+            notes=batch.notes,
+            auto_push=batch.auto_push,
+        )
+    except GitMemoryError as exc:
+        from loguru import logger
+
+        logger.warning(f"git autocommit skipped: {exc}")
 
 
 def schedule_autocommit(

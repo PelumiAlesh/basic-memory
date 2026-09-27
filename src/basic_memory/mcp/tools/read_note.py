@@ -58,6 +58,23 @@ def _exact_external_id(identifier: str) -> str | None:
         return None
 
 
+def _visible_search_candidates(candidates: list[dict[str, object]]) -> list[dict[str, object]]:
+    """Drop search suggestions the current client is not allowed to see."""
+    from basic_memory.mcp.privacy_gate import current_access, note_visible
+
+    if current_access().unrestricted:
+        return candidates
+    visible: list[dict[str, object]] = []
+    for candidate in candidates:
+        metadata = candidate.get("metadata")
+        meta = cast("dict[str, Any]", metadata) if isinstance(metadata, dict) else {}
+        file_path = candidate.get("file_path")
+        path = file_path if isinstance(file_path, str) else None
+        if note_visible(meta, path):
+            visible.append(candidate)
+    return visible
+
+
 @mcp.tool(
     title="Read Note",
     description="Read a markdown note by title or permalink, optionally a numbered line range.",
@@ -475,7 +492,7 @@ async def read_note(
                 title_results = await _search_candidates(
                     identifier, title_only=True, lookup_page=lookup_page
                 )
-                title_candidates = _search_results(title_results)
+                title_candidates = _visible_search_candidates(_search_results(title_results))
                 if not title_candidates:
                     logger.info(
                         f"No results in title search for: {identifier} "
@@ -541,7 +558,7 @@ async def read_note(
             text_results = await _search_candidates(identifier, title_only=False)
 
             # We didn't find a direct match, construct a helpful error message
-            text_candidates = _search_results(text_results)
+            text_candidates = _visible_search_candidates(_search_results(text_results))
             if not text_candidates:
                 if output_format == "json":
                     return _not_found_json_payload()
