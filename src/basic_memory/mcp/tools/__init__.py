@@ -9,6 +9,7 @@ all tools with the MCP server.
 from basic_memory.mcp.tools.basic_memory_diagnostics import basic_memory_diagnostics
 from basic_memory.mcp.tools.brief import get_brief
 from basic_memory.mcp.tools.delete_note import delete_note
+from basic_memory.mcp.tools.list_clients import list_clients
 from basic_memory.mcp.tools.read_content import read_content
 from basic_memory.mcp.tools.build_context import build_context
 from basic_memory.mcp.tools.recent_activity import recent_activity
@@ -51,6 +52,7 @@ __all__ = [
     "fetch",
     "find",
     "grep",
+    "list_clients",
     "list_directory",
     "list_memory_projects",
     "list_workspaces",

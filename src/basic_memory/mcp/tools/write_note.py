@@ -30,9 +30,11 @@ from basic_memory.shared_memory.conflicts import (
     supersedes_targets,
     wants_conflict_check,
 )
+from basic_memory.shared_memory.client_registry import client_registry
 from basic_memory.shared_memory.provenance import stamp_provenance
 from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
 from basic_memory.shared_memory.review import inbox_directory, mark_unreviewed_on_create
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -508,12 +510,24 @@ async def write_note(
 
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
-            outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
+            # Shared-server mode serializes canonical writes in-process; readers stay free.
+            async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
             match outcome:
                 case NoteCreated(entity=result):
                     action = "Created"
+                    client_registry().record_write(
+                        current_client_slug(),
+                        title=result.title,
+                        permalink=result.permalink,
+                    )
                 case NoteUpdated(entity=result):
                     action = "Updated"
+                    client_registry().record_write(
+                        current_client_slug(),
+                        title=result.title,
+                        permalink=result.permalink,
+                    )
                 case NoteAlreadyExists():
                     if output_format == "json":
                         return {

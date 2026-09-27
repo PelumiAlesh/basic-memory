@@ -18,6 +18,7 @@ from basic_memory.shared_memory.git_sync import (
     snapshot_before_write,
 )
 from basic_memory.shared_memory.request_client import current_client_slug
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
 from basic_memory.schemas.project_info import ProjectItem
 from basic_memory.utils import (
@@ -617,7 +618,10 @@ move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in dest
                         )
                     except GitMemoryError as exc:
                         logger.warning(f"git snapshot skipped: {exc}")
-                result = await knowledge_client.move_directory(source_directory, destination_path)
+                async with canonical_write_slot(enabled=ConfigManager().config.mcp_shared_server):
+                    result = await knowledge_client.move_directory(
+                        source_directory, destination_path
+                    )
                 if output_format == "json":
                     return {
                         "moved": result.total_files > 0 and result.failed_moves == 0,
@@ -974,7 +978,8 @@ move_note("{identifier}", destination_folder="notes")
                     logger.warning(f"git snapshot skipped: {exc}")
 
             # Call the move API using KnowledgeClient
-            result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
+            async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
 
             # --- Outcome validation (honest success backstop) ---
             # Trigger: the resulting file_path differs from the destination the caller
