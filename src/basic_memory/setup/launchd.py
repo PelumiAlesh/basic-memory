@@ -26,6 +26,11 @@ def launchd_plist_content(binary: Path, port: int, label: str, log_dir: Path) ->
     <string>--port</string>
     <string>{port}</string>
   </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>BASIC_MEMORY_NO_PROMOS</key>
+    <string>1</string>
+  </dict>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

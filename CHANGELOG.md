@@ -6,13 +6,20 @@
 
 - `get_brief` / `memory://_brief/{project}` and `bm brief` render one bounded project
   briefing: optional profile and current-state excerpts (omitted when missing), open
-  decision titles, inbox markdown count, and `brief_refresh_hours` throttling via
-  `<project>/.basic-memory/brief-delivery.json` when `--conversation` (or
-  `--conversation-id`) is set. Setup hooks call that same briefing.
+  decision titles, inbox markdown count, and `brief_refresh_hours` throttling (default
+  6) via `<project>/.basic-memory/brief-delivery.json`. `get_brief(conversation_id=...)`
+  records that id. `brief_include_profile` (default true) gates the profile excerpt.
+  Setup hooks call that same briefing.
 - `bm setup` writes Claude Code's user MCP server to `~/.claude.json`, keeps hooks in
   `~/.claude/settings.json`, reuses tokens across runs, and `--uninstall` restores or
-  deletes the files it touched. Cursor `sessionStart` can brief a new chat only.
-  Claude Code `UserPromptSubmit` emits `hookSpecificOutput.additionalContext`.
+  deletes the files it touched. Every MCP entry and the launchd agent get
+  `BASIC_MEMORY_NO_PROMOS=1`. Setup forces Logfire export off and sets
+  `cloud_promo_opt_out`. Cursor `sessionStart` can brief a new chat only. Setup also
+  writes `~/.cursor/rules/basic-memory-get-brief.mdc` and prints that text; following
+  it is not guaranteed. Claude Code `UserPromptSubmit` emits
+  `hookSpecificOutput.additionalContext`.
+- Directory `delete_note` copies every regular child file into `.bm-history/` before
+  deleting, and aborts if any copy fails.
 - Session capture stays off until `bm setup --session-capture`. Stop hooks are
   registered only then, and a status-only stop writes no inbox note. Captured text
   is local and clipped.

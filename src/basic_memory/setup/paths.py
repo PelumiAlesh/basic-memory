@@ -28,6 +28,16 @@ def cursor_hooks_path() -> Path:
     return Path.home() / ".cursor" / "hooks.json"
 
 
+def cursor_user_rule_path() -> Path:
+    """Machine-local Cursor rule file.
+
+    The rules reference documents account-synced user rules only through
+    Customize → Rules. The help page also documents ``~/.cursor/rules`` as
+    files that stay on this machine. Setup writes here and prints the same text.
+    """
+    return Path.home() / ".cursor" / "rules" / "basic-memory-get-brief.mdc"
+
+
 def claude_desktop_mcp_path() -> Path:
     if sys.platform == "darwin":
         return Path.home() / "Library/Application Support/Claude/claude_desktop_config.json"

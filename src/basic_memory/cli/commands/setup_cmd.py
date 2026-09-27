@@ -15,6 +15,7 @@ from basic_memory.cli.commands.hook import _hook_launcher
 from basic_memory.config import ConfigManager, ProjectEntry, ProjectMode
 from basic_memory.config_models import CONFIG_FILE_NAME, resolve_data_dir
 from basic_memory.setup import json_edit, launchd, manifest, paths, tokens
+from basic_memory.setup.cursor_rule import cursor_brief_rule_file, cursor_rule_install_notice
 from basic_memory.setup.hooks import (
     install_claude_hooks,
     install_cursor_hooks,
@@ -57,7 +58,13 @@ def resolve_cli_binary(explicit: Path | None) -> Path:
 
 
 def mcp_stdio_entry(binary: Path) -> dict[str, Any]:
-    return {"command": str(binary), "args": ["mcp"]}
+    # Promo analytics reads this env, not a config flag. Every process setup
+    # launches gets it. A shell the owner starts later does not inherit it.
+    return {
+        "command": str(binary),
+        "args": ["mcp"],
+        "env": {"BASIC_MEMORY_NO_PROMOS": "1"},
+    }
 
 
 def routing_document(primary_project: str) -> dict[str, Any]:
@@ -83,6 +90,9 @@ def describe_plan(plan: SetupPlan) -> str:
             f"Claude Code MCP: {paths.claude_code_mcp_path()} (user scope, not settings.json)",
             f"HTTP MCP URL: http://127.0.0.1:{plan.mcp_port}/mcp",
             f"Launchd: {'install' if plan.install_launchd else 'skip'} ({LAUNCHD_LABEL})",
+            "Offline: BASIC_MEMORY_NO_PROMOS=1 on every MCP entry and the launchd agent",
+            "Logfire export: forced off (logfire_enabled and logfire_send_to_logfire)",
+            f"Cursor rule file: {paths.cursor_user_rule_path()} (model-followed, not guaranteed)",
             f"Session capture: {'on' if plan.session_capture else 'off'}",
             "Hooks: Cursor sessionStart (new chats only); Claude Code UserPromptSubmit",
         ]
@@ -99,6 +109,14 @@ def apply_config(
     config = manager.config.model_copy(deep=True)
     config.auto_update = False
     config.verify_writes = True
+    # Trigger: setup is what launches the local MCP processes.
+    # Why: Logfire export and the CLI cloud promo are the other network exits
+    # that are on unless the owner opts out. Both flags already default off;
+    # setup writes them off so a previous config cannot leave them on.
+    # Outcome: uninstall restores the previous config.json, including these flags.
+    config.logfire_enabled = False
+    config.logfire_send_to_logfire = False
+    config.cloud_promo_opt_out = True
     config.mcp_http_host = "127.0.0.1"
     config.mcp_http_token = fork_tokens.shared_token
     config.mcp_http_client_tokens = dict(fork_tokens.client_tokens)
@@ -199,10 +217,19 @@ def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
         install_cursor_hooks(launcher, session_capture=plan.session_capture)
         install_claude_hooks(launcher, session_capture=plan.session_capture)
 
+        rule_path = paths.cursor_user_rule_path()
+        json_edit.remember_original(setup_manifest, manager.config_dir, rule_path)
+        rule_path.parent.mkdir(parents=True, exist_ok=True)
+        rule_path.write_text(
+            cursor_brief_rule_file(float(manager.config.brief_refresh_hours)),
+            encoding="utf-8",
+        )
+
         plist_body = launchd.launchd_plist_content(
             plan.binary, plan.mcp_port, LAUNCHD_LABEL, manager.config_dir
         )
         template = manager.config_dir / "basic-memory-mcp.plist"
+        json_edit.remember_original(setup_manifest, manager.config_dir, template)
         if plan.install_launchd:
             installed = launchd.install_launchd(
                 label=LAUNCHD_LABEL,
@@ -285,6 +312,7 @@ def setup_command(
     typer.echo(describe_plan(plan))
     if dry_run:
         typer.echo("\n(dry run — no files written)")
+        typer.echo(cursor_rule_install_notice(6.0, paths.cursor_user_rule_path()))
         return
     if not yes and not typer.confirm("Apply this setup plan?", default=False):
         raise typer.Abort()
@@ -297,8 +325,8 @@ def setup_command(
 
     typer.echo("\nSetup complete.")
     typer.echo(
-        "Cursor adds the brief only when a new chat is created (sessionStart). "
-        "Reopening an old chat does not run that hook, and beforeSubmitPrompt cannot "
-        "add context. In an old Cursor chat, call get_brief. "
-        "Claude Code adds the brief on UserPromptSubmit, including a resumed session."
+        "Claude Code adds the brief on UserPromptSubmit, including a resumed session. "
+        "Cursor sessionStart briefs a new chat only."
     )
+    hours = float(ConfigManager().config.brief_refresh_hours)
+    typer.echo(cursor_rule_install_notice(hours, paths.cursor_user_rule_path()))

@@ -647,6 +647,13 @@ class BasicMemoryConfig(BaseSettings):
             "Env: BASIC_MEMORY_BRIEF_PROFILE_NOTE"
         ),
     )
+    brief_include_profile: bool = Field(
+        default=True,
+        description=(
+            "Include the profile note excerpt in get_brief when that note exists. "
+            "Env: BASIC_MEMORY_BRIEF_INCLUDE_PROFILE"
+        ),
+    )
     brief_state_note: str = Field(
         default="project/state",
         description=(
@@ -678,11 +685,11 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
     brief_refresh_hours: float = Field(
-        default=24.0,
+        default=6.0,
         gt=0,
         description=(
             "Minimum hours between brief deliveries for the same conversation, for "
-            "bm brief and for prompt-submit hooks. "
+            "get_brief, bm brief, and prompt-submit hooks. "
             "Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
         ),
     )

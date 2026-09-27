@@ -12,6 +12,12 @@ from basic_memory.config import ConfigManager
 from basic_memory.mcp.project_context import get_project_client
 from basic_memory.mcp.server import mcp
 from basic_memory.schemas.search import SearchItemType, SearchQuery, SearchRetrievalMode
+from basic_memory.shared_memory.brief_delivery import (
+    BriefDeliveryState,
+    JsonBriefDeliveryStore,
+    project_delivery_path,
+    should_deliver_brief,
+)
 from basic_memory.shared_memory.briefing import BriefSection, render_brief
 
 _EXCERPT_CHARS = 800
@@ -74,6 +80,7 @@ async def build_brief(
     project_id: str | None,
     token_budget: int | None,
     context: Context | None,
+    conversation_id: str | None = None,
 ) -> str:
     """Assemble the brief for one project. Shared by the tool and the resource."""
     config = ConfigManager().config
@@ -86,6 +93,27 @@ async def build_brief(
         active_project,
     ):
         from basic_memory.mcp.clients import DirectoryClient, KnowledgeClient, SearchClient
+
+        conversation = (conversation_id or "").strip() or None
+        pending_delivery: tuple[JsonBriefDeliveryStore, BriefDeliveryState, str] | None = None
+        if conversation is not None:
+            delivery_store = JsonBriefDeliveryStore(project_delivery_path(active_project.home))
+            delivery_state = delivery_store.load()
+            # Trigger: this conversation already received a brief inside the window.
+            # Why: get_brief is how a resumed Cursor chat refreshes, and a repeat
+            # inside brief_refresh_hours should not rebuild or reset the clock.
+            # Outcome: a one-line notice, with the previous timestamp left in place.
+            if not should_deliver_brief(
+                delivery_state.last_delivered_at(conversation),
+                refresh_hours=float(config.brief_refresh_hours),
+                force=False,
+            ):
+                hours = f"{float(config.brief_refresh_hours):g}"
+                return (
+                    "Brief already delivered for this conversation within the last "
+                    f"{hours} hours.\n"
+                )
+            pending_delivery = (delivery_store, delivery_state, conversation)
 
         knowledge = KnowledgeClient(client, active_project.external_id)
         search = SearchClient(client, active_project.external_id)
@@ -121,21 +149,33 @@ async def build_brief(
             BriefSection("Inbox", f"{inbox_count} note(s) in {config.brief_inbox_folder}/")
         )
 
-        profile = await _optional_excerpt(knowledge, config.brief_profile_note)
-        if profile:
-            sections.append(BriefSection("Profile", profile))
+        # Trigger: brief_include_profile is on (the default).
+        # Why: the profile excerpt is useful and was always included when the note
+        # existed. The flag lets an owner leave it out without changing that default.
+        # Outcome: the Profile section is omitted when the flag is false.
+        if config.brief_include_profile:
+            profile = await _optional_excerpt(knowledge, config.brief_profile_note)
+            if profile:
+                sections.append(BriefSection("Profile", profile))
 
         rendered = render_brief(sections, token_budget=budget)
-        return f"{rendered}\nproject: {active_project.name}\n"
+        text = f"{rendered}\nproject: {active_project.name}\n"
+        if pending_delivery is not None:
+            store, state, conversation_key = pending_delivery
+            state.record(conversation_key, datetime.now(timezone.utc))
+            store.save(state)
+        return text
 
 
 @mcp.tool(
     title="Get Brief",
     description=(
         "Return a short briefing: current state, recent decision titles, an inbox "
-        "file count, and the profile note when those notes exist. Call this at the "
-        "start of a chat that has no brief in context. Cursor does not inject a brief "
-        "when an old chat is resumed."
+        "file count, and the profile note when those notes exist and "
+        "brief_include_profile is on. Call this at the start of a chat that has no "
+        "brief in context. Cursor does not inject a brief when an old chat is "
+        "resumed. Pass conversation_id when you have one: a repeat within "
+        "brief_refresh_hours (default 6) returns a short already-delivered line."
     ),
     tags={"navigation", "notes"},
     annotations={
@@ -149,6 +189,7 @@ async def get_brief(
     project: str | None = None,
     project_id: str | None = None,
     token_budget: int | None = None,
+    conversation_id: str | None = None,
     context: Context | None = None,
 ) -> str:
     """Bounded project briefing for hookless clients.
@@ -157,13 +198,19 @@ async def get_brief(
     `project/state`), decision note titles from the last `brief_decision_days`,
     a count of markdown files in `brief_inbox_folder` (default `inbox/`), and
     the profile note excerpt when present (`brief_profile_note`, default
-    `me/profile`). Missing profile or state notes are omitted with no error text.
+    `me/profile`) if `brief_include_profile` is true (the default). Missing
+    profile or state notes are omitted with no error text.
     `token_budget` overrides `brief_token_budget` (default 1500). Roughly four
     characters per token; later sections are dropped first.
+
+    `conversation_id`, when set, is recorded in the project's brief-delivery
+    store. A later call for the same id inside `brief_refresh_hours` (default
+    6) does not rebuild the brief.
     """
     return await build_brief(
         project=project,
         project_id=project_id,
         token_budget=token_budget,
         context=context,
+        conversation_id=conversation_id,
     )

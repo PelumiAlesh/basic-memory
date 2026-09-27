@@ -6,13 +6,18 @@ Claude Code, ChatGPT, and Grok Bot. The folder is an Obsidian vault (default
 jobs.
 
 Fork features write only on this machine: the vault, `.bm-history/`, `.bm-logs/`, and
-`~/.basic-memory/`. They do not open a connection to upload note bodies. Upstream
-`basic-memory cloud push`, `cloud sync`, and `cloud bisync` still upload the vault if
-you run them. Logfire export stays off unless `logfire_enabled` and
-`logfire_send_to_logfire` are both on, and those spans do not attach note bodies or
-search text. Promo analytics sends an event name and the version string to Umami;
-`BASIC_MEMORY_NO_PROMOS=1` turns that off. A client you connect (ChatGPT, for example)
-receives whatever tool result you asked it to fetch.
+`~/.basic-memory/`. They do not open a connection to upload note bodies. `bm setup`
+puts `BASIC_MEMORY_NO_PROMOS=1` on every MCP server entry it writes and on the
+launchd agent, sets `logfire_enabled` and `logfire_send_to_logfire` to false, and
+sets `cloud_promo_opt_out` so the CLI promo panel does not call Umami.
+`--uninstall` restores the previous config and those MCP files, and removes the
+launchd agent. Upstream `basic-memory cloud push`, `cloud sync`, `cloud bisync`,
+and `bm cloud login` still talk to the network if you run them. A terminal `bm`
+you start yourself does not inherit the MCP env; the promo panel stays off because
+of `cloud_promo_opt_out`. Logfire spans, when you turn them back on, do not attach
+note bodies or search text. A client you connect (ChatGPT, for example) receives
+whatever tool result you asked it to fetch. Semantic search can download an
+embedding model once.
 
 This page describes only what the fork adds to upstream Basic Memory. Each section names the
 setting that controls the feature and its default.
@@ -157,12 +162,16 @@ Settings (env vars use the `BASIC_MEMORY_` prefix):
 - `brief_state_note` (default `project/state`) — included when the note exists
 - `brief_profile_note` (default `me/profile`) — optional excerpt when the note exists;
   missing notes are omitted with no error text
+- `brief_include_profile` (default `true`) — when false, `get_brief` omits that excerpt
+  even if the note exists. The default leaves the excerpt in, which is the previous
+  behavior
 - `brief_inbox_folder` (default `inbox`) — top-level markdown files counted in the brief
 - `brief_decision_days` (default `14`) — decision note titles listed by search
 - `brief_token_budget` (default `1500`) — rough character budget (`len / 4`); later
   sections drop first
-- `brief_refresh_hours` (default `24`) — minimum time between deliveries for the same
-  conversation (`bm brief --conversation <id>`, or `--conversation-id`; `--force` overrides)
+- `brief_refresh_hours` (default `6`) — minimum time between deliveries for the same
+  conversation (`bm brief --conversation <id>`, or `--conversation-id`; `--force` overrides).
+  `get_brief(conversation_id=...)` uses the same clock and records the id when you pass one
 
 Delivery timestamps are stored in `<project>/.basic-memory/brief-delivery.json`.
 
@@ -178,8 +187,18 @@ Delivery timestamps are stored in `<project>/.basic-memory/brief-delivery.json`.
   context. It does not run when you reopen an old chat. `beforeSubmitPrompt` can only
   return `continue` and `user_message` (a message shown when the prompt is blocked),
   so setup does not register it.
-- In a resumed Cursor chat the brief is not injected. The `get_brief` tool is available
-  if setup wrote `~/.cursor/mcp.json`. Call it.
+- In a resumed Cursor chat the brief is not injected by a hook. Setup writes a
+  machine-local rule file at `~/.cursor/rules/basic-memory-get-brief.mdc` and prints
+  the same text. The rules reference
+  ([cursor.com/docs/rules](https://cursor.com/docs/rules)) defines global user rules
+  only in Customize → Rules (account-synced, no file API). The help page
+  ([cursor.com/help/customization/rules](https://cursor.com/help/customization/rules))
+  also documents user rule files in `~/.cursor/rules` that stay on the machine.
+  The rule asks the model to call `get_brief` at the start of a turn when it has
+  not called `get_brief` in that conversation within the last 6 hours, and to pass
+  `conversation_id` when it has one. Following the rule is not guaranteed.
+  `--uninstall` removes or restores the file. A rule pasted into Customize → Rules
+  stays until you delete it there.
 
 See [FORK_SETUP_CURSOR_HOOKS.md](FORK_SETUP_CURSOR_HOOKS.md).
 
@@ -192,7 +211,7 @@ Settings (local only; default on):
 | `usage_log_enabled` | `true` | `BASIC_MEMORY_USAGE_LOG_ENABLED` |
 | `usage_log_retention_days` | `90` | `BASIC_MEMORY_USAGE_LOG_RETENTION_DAYS` |
 
-`brief_refresh_hours` (default `24`, see Brief) is the same clock the prompt-submit hooks use
+`brief_refresh_hours` (default `6`, see Brief) is the same clock the prompt-submit hooks use
 when deciding whether a resumed conversation should get another brief.
 
 Each project writes JSON lines to `<project>/.bm-logs/events-YYYY-MM-DD.jsonl` (UTC). The folder
@@ -220,9 +239,10 @@ afterMCPExecution plus `tool_name` on afterMCPExecution.
 
 **Cursor coverage:** `sessionStart` fires for a new composer chat, not when a month-old
 chat is reopened. `beforeSubmitPrompt` cannot inject context. Cursor cloud agents do
-not load these hooks. A resumed Cursor chat gets no automatic brief. HTTP clients
-without hooks (ChatGPT, Grok) get INFERRED session stats from MCP logs using a
-30-minute idle gap.
+not load these hooks. A resumed Cursor chat gets no automatic brief. The user rule
+file from `bm setup` is a model-followed reminder to call `get_brief`, not a hook.
+HTTP clients without hooks (ChatGPT, Grok) get INFERRED session stats from MCP logs
+using a 30-minute idle gap.
 
 ## Session capture (v2)
 
@@ -237,11 +257,26 @@ The note is ordinary markdown, so search can find it. A stop that is only a stat
 which is what Cursor's documented stop input is, writes nothing. The same payload
 twice does not append twice. Nothing in this feature is uploaded.
 
+## Local history
+
+Before `write_note`, `edit_note`, `move_note`, and a single-file `delete_note` change
+an existing file, the fork copies that file into `<project>/.bm-history/`. A directory
+`delete_note` copies every regular file under that directory first. Symlinks are not
+followed, and `.bm-history` is not copied into itself. If any copy fails, the delete
+raises and the files stay. There is no restore command; the copies are ordinary files.
+
 ## Setup
 
 `bm setup` is safe to run again. It reuses `~/.basic-memory/fork-mcp-tokens.json` and
 does not mint new tokens. `--uninstall` copies back the files it changed and deletes
-files it created, including a `config.json` that did not exist before.
+files it created, including a `config.json` that did not exist before, the launchd
+plist template, and the Cursor rule file when setup created it.
+
+Every MCP entry (`~/.cursor/mcp.json`, Claude Desktop, and `~/.claude.json`) gets
+`env.BASIC_MEMORY_NO_PROMOS=1`. The launchd plist sets the same variable. Setup also
+writes `logfire_enabled=false`, `logfire_send_to_logfire=false`, and
+`cloud_promo_opt_out=true`. Uninstall restores the previous `config.json`, so a
+Logfire setting you had before setup comes back.
 
 Claude Code user-scope MCP servers are written to `~/.claude.json` (`mcpServers`),
 which is where `claude mcp add --scope user` writes them. `~/.claude/settings.json`

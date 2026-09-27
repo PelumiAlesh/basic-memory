@@ -217,3 +217,59 @@ async def test_overwrite_aborts_when_snapshot_fails(client, test_project, monkey
 
     note_path = Path(test_project.path) / "plans" / "Blocked Overwrite.md"
     assert "Original." in note_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_directory_delete_snapshots_every_child(client, test_project):
+    from basic_memory.mcp.tools.delete_note import delete_note
+
+    await write_note(
+        project=test_project.name,
+        title="Alpha",
+        directory="bundle",
+        content="# Alpha\n\nkeep-alpha",
+    )
+    await write_note(
+        project=test_project.name,
+        title="Beta",
+        directory="bundle/nested",
+        content="# Beta\n\nkeep-beta",
+    )
+
+    result = await delete_note("bundle", is_directory=True, project=test_project.name)
+    assert result is not False
+    history = Path(test_project.path) / ".bm-history"
+    texts = [path.read_text(encoding="utf-8") for path in history.iterdir() if path.is_file()]
+    assert any("keep-alpha" in text for text in texts)
+    assert any("keep-beta" in text for text in texts)
+    assert not (Path(test_project.path) / "bundle" / "Alpha.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_directory_delete_aborts_when_snapshot_fails(client, test_project, monkeypatch):
+    from basic_memory.mcp.tools.delete_note import delete_note
+
+    await write_note(
+        project=test_project.name,
+        title="Alpha",
+        directory="bundle",
+        content="# Alpha\n\nkeep-alpha",
+    )
+
+    def _fail_snapshot(*_args: object, **_kwargs: object) -> None:
+        from fastmcp.exceptions import ToolError
+
+        raise ToolError("Local history snapshot failed: simulated")
+
+    import importlib
+
+    delete_module = importlib.import_module("basic_memory.mcp.tools.delete_note")
+    monkeypatch.setattr(delete_module, "snapshot_local_directory", _fail_snapshot)
+
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError, match="snapshot failed"):
+        await delete_note("bundle", is_directory=True, project=test_project.name)
+
+    note_path = Path(test_project.path) / "bundle" / "Alpha.md"
+    assert "keep-alpha" in note_path.read_text(encoding="utf-8")

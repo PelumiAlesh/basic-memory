@@ -8,7 +8,7 @@ from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
 from basic_memory.mcp.write_verification import verify_note_delete
-from basic_memory.shared_memory.write_safety import snapshot_local_note
+from basic_memory.shared_memory.write_safety import snapshot_local_directory, snapshot_local_note
 from basic_memory.mcp.project_context import (
     detect_project_from_memory_url_prefix,
     get_project_client,
@@ -312,20 +312,24 @@ async def delete_note(
 
         # Handle directory deletes
         if is_directory:
-            try:
-                # Trigger: directory input was routed from a memory:// URL.
-                # Why: resolve_project_and_path returns canonical permalinks, while
-                #   delete_directory filters by project-relative file_path prefixes.
-                # Outcome: strip only the route prefix before calling the delete API.
-                directory_identifier = (
-                    _directory_path_for_delete(
-                        target_identifier,
-                        active_project,
-                        include_project_prefix=ConfigManager().config.permalinks_include_project,
-                    )
-                    if is_memory_url
-                    else target_identifier
+            # Trigger: directory input was routed from a memory:// URL.
+            # Why: resolve_project_and_path returns canonical permalinks, while
+            #   delete_directory filters by project-relative file_path prefixes.
+            # Outcome: strip only the route prefix before the snapshot and the delete.
+            directory_identifier = (
+                _directory_path_for_delete(
+                    target_identifier,
+                    active_project,
+                    include_project_prefix=ConfigManager().config.permalinks_include_project,
                 )
+                if is_memory_url
+                else target_identifier
+            )
+            # Snapshot every child before the API delete. This stays outside the
+            # error formatter below: a failed copy raises ToolError and must not
+            # become a message returned after the files are already gone.
+            snapshot_local_directory(active_project.home, directory_identifier)
+            try:
                 result = await knowledge_client.delete_directory(directory_identifier)
                 if output_format == "json":
                     response = {

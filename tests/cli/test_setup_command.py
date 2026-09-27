@@ -40,7 +40,9 @@ def test_merge_mcp_servers_preserves_other_entries() -> None:
     existing = {"mcpServers": {"other": {"command": "echo"}}}
     merged = merge_mcp_servers(existing, mcp_stdio_entry(Path("/tmp/bm")))
     assert merged["mcpServers"]["other"]["command"] == "echo"
-    assert merged["mcpServers"]["basic-memory"]["command"] == "/tmp/bm"
+    entry = merged["mcpServers"]["basic-memory"]
+    assert entry["command"] == "/tmp/bm"
+    assert entry["env"] == {"BASIC_MEMORY_NO_PROMOS": "1"}
 
 
 def test_run_setup_idempotent_tokens(
@@ -119,8 +121,26 @@ def test_run_setup_writes_client_configs(
 
     config = ConfigManager().config
     assert config.auto_update is False
+    assert config.logfire_enabled is False
+    assert config.logfire_send_to_logfire is False
+    assert config.cloud_promo_opt_out is True
     assert config.session_capture_enabled is True
     assert config.projects["research"].path == str((tmp_path / "vault").resolve())
+    for mcp_path in (
+        paths.cursor_mcp_path(),
+        paths.claude_desktop_mcp_path(),
+        paths.claude_code_mcp_path(),
+    ):
+        entry = json.loads(mcp_path.read_text())["mcpServers"]["basic-memory"]
+        assert entry["env"]["BASIC_MEMORY_NO_PROMOS"] == "1"
+    rule = paths.cursor_user_rule_path().read_text(encoding="utf-8")
+    assert "alwaysApply: true" in rule
+    assert "get_brief" in rule
+    assert "6 hours" in rule
+    assert "not guaranteed" in rule
+    plist = (bm_home / "basic-memory-mcp.plist").read_text(encoding="utf-8")
+    assert "BASIC_MEMORY_NO_PROMOS" in plist
+    assert "<string>1</string>" in plist
 
 
 def test_uninstall_restores_backed_up_file(
@@ -173,7 +193,10 @@ def test_setup_cli_dry_run(bm_home: Path, tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
     assert "dry run" in result.stdout
+    assert "not guaranteed" in result.stdout
+    assert "get_brief" in result.stdout
     assert not (tmp_path / "vault").exists()
+    assert not paths.cursor_user_rule_path().exists()
 
 
 def test_uninstall_restores_created_and_existing_files(
@@ -215,6 +238,8 @@ def test_uninstall_restores_created_and_existing_files(
     assert settings.read_text(encoding="utf-8") == original_settings
     assert hooks_path.read_text(encoding="utf-8") == original_hooks
     assert not paths.claude_code_mcp_path().exists()
+    assert not paths.cursor_user_rule_path().exists()
+    assert not (bm_home / "basic-memory-mcp.plist").exists()
     assert not (bm_home / "config.json").exists()
 
 
@@ -253,6 +278,52 @@ def test_hook_brief_uses_shared_renderer(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     monkeypatch.setattr("basic_memory.setup.fork_hooks._primary_project", lambda: "main")
     assert _render_brief_text() == "brief:main"
+
+
+def test_uninstall_restores_cursor_rule_and_logfire(
+    bm_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    rule = paths.cursor_user_rule_path()
+    rule.parent.mkdir(parents=True, exist_ok=True)
+    rule.write_text("owner rule\n", encoding="utf-8")
+
+    monkeypatch.setattr("basic_memory.setup.launchd.install_launchd", lambda **_: None)
+    monkeypatch.setattr("basic_memory.setup.launchd.uninstall_launchd", lambda *a, **k: None)
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+
+    manager = ConfigManager()
+    config = manager.load_config()
+    config.logfire_enabled = True
+    config.logfire_send_to_logfire = True
+    config.cloud_promo_opt_out = False
+    manager.save_config(config)
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+    )
+    run_setup(plan, dry_run=False)
+    saved = ConfigManager().load_config()
+    assert saved.logfire_enabled is False
+    assert saved.logfire_send_to_logfire is False
+    assert saved.cloud_promo_opt_out is True
+    assert "get_brief" in rule.read_text(encoding="utf-8")
+
+    run_uninstall()
+    assert rule.read_text(encoding="utf-8") == "owner rule\n"
+    restored = ConfigManager().load_config()
+    assert restored.logfire_enabled is True
+    assert restored.logfire_send_to_logfire is True
+    assert restored.cloud_promo_opt_out is False
 
 
 def test_resolve_cli_binary_requires_existing_path(tmp_path: Path) -> None:
