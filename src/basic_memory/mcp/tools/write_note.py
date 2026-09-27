@@ -11,8 +11,18 @@ from loguru import logger
 from pydantic import AliasChoices, BeforeValidator, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.file_utils import remove_frontmatter
+from basic_memory.file_utils import (
+    ParseError,
+    has_frontmatter,
+    parse_frontmatter,
+    remove_frontmatter,
+)
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
+from basic_memory.shared_memory.conflicts import (
+    format_possible_conflicts,
+    supersedes_targets,
+    wants_conflict_check,
+)
 from basic_memory.shared_memory.provenance import stamp_provenance
 from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
 from basic_memory.shared_memory.review import inbox_directory, mark_unreviewed_on_create
@@ -527,6 +537,34 @@ async def write_note(
                     project=active_project.name,
                     context=context,
                 )
+            content_frontmatter: dict[str, object] = {}
+            if has_frontmatter(content):
+                try:
+                    content_frontmatter = parse_frontmatter(content)
+                except ParseError:
+                    content_frontmatter = {}
+            superseded: list[str] = []
+            for target in supersedes_targets(entity_metadata, content_frontmatter):
+                if target in {result.permalink, result.file_path, title}:
+                    continue
+                from basic_memory.mcp.tools.edit_note import edit_note
+
+                try:
+                    await edit_note(
+                        target,
+                        operation="append",
+                        content="",
+                        metadata={"status": "superseded"},
+                        project=active_project.name,
+                        context=context,
+                    )
+                except ToolError:
+                    superseded.append(f"{target} (not updated)")
+                else:
+                    superseded.append(target)
+            conflict_check = wants_conflict_check(
+                note_type, enabled=app_config.conflict_check_on_write
+            )
             # --- Similar-note advisory ---
             # Trigger: the note was created (not updated).
             # Why: agents writing across sessions know the topic but not whether a note on
@@ -540,7 +578,8 @@ async def write_note(
             # Outcome: the summary gains a "Similar existing notes" section when the index
             #          has neighbors. The write itself is already complete either way.
             similar_notes: list[SimilarNote] = []
-            if action == "Created":
+            # Decision and preference writes report conflicts on update as well as create.
+            if action == "Created" or conflict_check:
                 try:
                     similar_notes = await _find_similar_notes(
                         SearchClient(client, active_project.external_id),
@@ -629,10 +668,18 @@ async def write_note(
             if action == "Created" and mark_unreviewed:
                 summary.append("\nstatus: unreviewed")
 
-            if similar_notes:
+            if similar_notes and conflict_check:
+                summary.append(
+                    format_possible_conflicts(
+                        [(note.title, note.permalink or note.file_path) for note in similar_notes]
+                    )
+                )
+            elif similar_notes:
                 summary.append(
                     _format_similar_notes_section(similar_notes, new_permalink=response_permalink)
                 )
+            if superseded:
+                summary.append("\n## Supersedes\n" + "\n".join(f"- {item}" for item in superseded))
 
             # Log the response with structured data
             logger.debug(
@@ -649,6 +696,18 @@ async def write_note(
                 }
                 if action == "Created" and mark_unreviewed:
                     payload["status"] = "unreviewed"
+                if conflict_check:
+                    payload["possible_conflicts"] = [
+                        {
+                            "title": note.title,
+                            "permalink": note.permalink,
+                            "file_path": note.file_path,
+                            "flag": "possible conflict",
+                        }
+                        for note in similar_notes
+                    ]
+                if superseded:
+                    payload["supersedes"] = superseded
                 return payload
 
             summary_result = "\n".join(summary)

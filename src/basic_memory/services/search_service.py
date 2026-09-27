@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 import logfire
 
 from basic_memory import db
+from basic_memory.config import ConfigManager
+from basic_memory.shared_memory.conflicts import INACTIVE_STATUSES
 from basic_memory.indexing.relation_resolution import RelationSearchRefreshResult
 from basic_memory.models import Entity
 from basic_memory.repository import EntityRepository
@@ -176,6 +178,23 @@ def prepare_search_query(query: SearchQuery) -> PreparedSearchQuery | None:
         if query.status:
             metadata_filters.setdefault("status", query.status)
 
+    # Trigger: a discovery search, not an exact permalink or an explicit status filter.
+    # Why: superseded and archived notes stay in the graph but should not answer
+    # ordinary search. NULL status stays visible; NOT IN would have dropped it.
+    # Outcome: the reader adds a status exclusion unless the caller opted in
+    # or the config flag is off.
+    exclude_statuses = None
+    metadata_sets_status = bool(query.metadata_filters and "status" in query.metadata_filters)
+    status_is_set = bool(query.status and str(query.status).strip())
+    if (
+        ConfigManager().config.search_exclude_inactive
+        and not query.include_inactive
+        and not query.permalink
+        and not status_is_set
+        and not metadata_sets_status
+    ):
+        exclude_statuses = INACTIVE_STATUSES
+
     prepared = PreparedSearchQuery(
         search_text=search_text,
         permalink=query.permalink,
@@ -194,6 +213,7 @@ def prepare_search_query(query: SearchQuery) -> PreparedSearchQuery | None:
         temporal=build_temporal_filter(query),
         retrieval_mode=query.retrieval_mode or SearchRetrievalMode.FTS,
         min_similarity=query.min_similarity,
+        exclude_statuses=exclude_statuses,
     )
 
     has_criteria = bool(

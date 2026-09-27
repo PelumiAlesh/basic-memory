@@ -38,20 +38,25 @@ _LIKE_ESCAPE_CHARACTER = "\\"
 
 @dataclass(frozen=True, slots=True)
 class FilterDialect:
-    """The two SQL spellings that differ between backends inside the shared filters."""
+    """The SQL spellings that differ between backends inside the shared filters."""
 
     note_type_value: str
     after_date_condition: str
+    # `{alias}` is the entity table alias. Missing status must stay NULL so
+    # COALESCE can keep notes that never set one.
+    status_text: str
 
 
 SQLITE_FILTER_DIALECT = FilterDialect(
     note_type_value=SQLITE_NOTE_TYPE_VALUE,
     # datetime() normalizes both sides so ISO strings of mixed precision compare as instants.
     after_date_condition="datetime(search_index.updated_at) > datetime(:after_date)",
+    status_text="json_extract({alias}.entity_metadata, '$.status')",
 )
 POSTGRES_FILTER_DIALECT = FilterDialect(
     note_type_value=POSTGRES_NOTE_TYPE_VALUE,
     after_date_condition="search_index.updated_at > :after_date",
+    status_text="{alias}.entity_metadata ->> 'status'",
 )
 
 
@@ -305,5 +310,26 @@ def shared_filter_conditions(
     # temporal_filters for the overlap rule and why the subquery is non-correlated.
     if query.temporal is not None:
         conditions.append(build_temporal_predicate(query.temporal, params, scope=scope))
+
+    # Trigger: discovery search is hiding superseded and archived notes.
+    # Why: `NOT IN` drops NULL, and notes with no status are active. COALESCE
+    # makes the comparison false for them so they stay in the page. Exact
+    # permalink lookup does not set exclude_statuses.
+    # Outcome: a note is dropped only when its frontmatter status is one of
+    # the excluded values, on both SQLite and Postgres.
+    if query.exclude_statuses:
+        status_expr = dialect.status_text.format(alias="inactive_note")
+        placeholders: list[str] = []
+        for index, status in enumerate(query.exclude_statuses):
+            name = f"inactive_status_{index}"
+            params[name] = status
+            placeholders.append(f":{name}")
+        conditions.append(
+            "NOT EXISTS ("
+            "SELECT 1 FROM entity AS inactive_note "
+            "WHERE inactive_note.id = search_index.entity_id "
+            f"AND lower(COALESCE({status_expr}, '')) IN ({', '.join(placeholders)})"
+            ")"
+        )
 
     return conditions
