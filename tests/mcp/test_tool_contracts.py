@@ -181,6 +181,7 @@ EXPECTED_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "build_context": {"readOnlyHint": True, "destructiveHint": False},
     "fetch": {"readOnlyHint": True, "destructiveHint": False},
     "get_brief": {"readOnlyHint": True, "destructiveHint": False},
+    "list_clients": {"readOnlyHint": True, "destructiveHint": False},
     "list_directory": {"readOnlyHint": True, "destructiveHint": False},
     "list_memory_projects": {"readOnlyHint": True, "destructiveHint": False},
     "list_workspaces": {"readOnlyHint": True, "destructiveHint": False},

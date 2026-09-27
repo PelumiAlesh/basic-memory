@@ -22,6 +22,7 @@ from basic_memory.shared_memory.git_sync import (
     snapshot_before_write,
 )
 from basic_memory.shared_memory.request_client import current_client_slug
+from basic_memory.shared_memory.write_gate import canonical_write_slot
 from basic_memory.utils import generate_permalink, normalize_project_reference
 from basic_memory.workspace_context import current_workspace_permalink_context
 
@@ -344,7 +345,8 @@ async def delete_note(
                         )
                     except GitMemoryError as exc:
                         logger.warning(f"git snapshot skipped: {exc}")
-                result = await knowledge_client.delete_directory(directory_identifier)
+                async with canonical_write_slot(enabled=ConfigManager().config.mcp_shared_server):
+                    result = await knowledge_client.delete_directory(directory_identifier)
                 if output_format == "json":
                     response = {
                         "deleted": result.total_files > 0 and result.failed_deletes == 0,
@@ -499,7 +501,8 @@ delete_note("path/to/file.md")
                     logger.warning(f"git snapshot skipped: {exc}")
 
             # Call the DELETE endpoint
-            result = await knowledge_client.delete_entity(entity_id)
+            async with canonical_write_slot(enabled=app_config.mcp_shared_server):
+                result = await knowledge_client.delete_entity(entity_id)
 
             if result.deleted:
                 logger.info(

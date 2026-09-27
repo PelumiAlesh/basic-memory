@@ -941,6 +941,28 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    mcp_shared_server: bool = Field(
+        default=False,
+        description=(
+            "Run one long-lived MCP HTTP server for every local client. When true, "
+            "streamable-http/SSE claim a pidfile under the config dir, serialize "
+            "canonical note writes in-process, and refuse a second MCP process "
+            "(including stdio) against the same install with a clear error. "
+            "Default false keeps single-client stdio unchanged. "
+            "Env: BASIC_MEMORY_MCP_SHARED_SERVER"
+        ),
+    )
+
+    session_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "On Cursor stop / Claude Stop or SessionEnd, write a short private "
+            "session summary into the review inbox (status unreviewed). Off by "
+            "default. Idempotent per harness session id. Does not copy private "
+            "note bodies. Env: BASIC_MEMORY_SESSION_CAPTURE_ENABLED"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
