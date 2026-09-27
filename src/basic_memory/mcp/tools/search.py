@@ -52,6 +52,19 @@ _NO_SEARCH_CRITERIA_MESSAGE = (
 # pass "note_type" (the entity model column) when the frontmatter field is "type".
 _METADATA_KEY_ALIASES = {"note_type": "type"}
 _VALID_SEARCH_TYPES = ("hybrid", "permalink", "semantic", "text", "title", "vector")
+# Frontmatter statuses search_exclude_inactive leaves out of discovery search.
+INACTIVE_NOTE_STATUSES = ("superseded", "archived")
+
+
+def inactive_statuses_to_exclude(include_inactive: bool) -> tuple[str, ...]:
+    """The statuses discovery search leaves out: none unless search_exclude_inactive is on."""
+    if include_inactive:
+        return ()
+    try:
+        config = get_container().config
+    except RuntimeError:
+        config = ConfigManager().config
+    return INACTIVE_NOTE_STATUSES if config.search_exclude_inactive else ()
 
 
 def _build_search_query(
@@ -69,6 +82,7 @@ def _build_search_query(
     valid_at: str | None,
     valid_overlaps: str | None,
     time_kind: str | None,
+    exclude_statuses: tuple[str, ...] = (),
 ) -> SearchQuery | None:
     """Map tool parameters onto one ``SearchQuery``; ``None`` when nothing narrows the search.
 
@@ -133,6 +147,16 @@ def _build_search_query(
 
     if search_query.no_criteria():
         return None
+
+    # Trigger: search_exclude_inactive is on and the caller did not pass include_inactive.
+    # Why: an exact permalink names one note, and a status filter asks about statuses
+    #      directly; hiding superseded notes from either would answer another question.
+    # Outcome: discovery searches drop superseded and archived notes, lookups keep them.
+    asks_about_status = bool(search_query.status) or "status" in (
+        search_query.metadata_filters or {}
+    )
+    if exclude_statuses and search_query.permalink is None and not asks_about_status:
+        search_query.exclude_statuses = list(exclude_statuses)
 
     # Default to entity-level results to avoid returning individual
     # observations/relations as separate search results (see issue #31).
@@ -805,6 +829,7 @@ async def _search_all_projects(
     context: Context | None,
     compact: bool = False,
     projects: list[str] | None = None,
+    exclude_statuses: tuple[str, ...] = (),
 ) -> dict[str, Any] | str:
     """Search every accessible project, one query per database.
 
@@ -851,6 +876,7 @@ async def _search_all_projects(
         valid_at=valid_at,
         valid_overlaps=valid_overlaps,
         time_kind=time_kind,
+        exclude_statuses=exclude_statuses,
     )
     if search_query is None:
         return _NO_SEARCH_CRITERIA_MESSAGE
@@ -1116,6 +1142,12 @@ async def search_notes(
         "Omit note bodies and matched excerpts from results. Keep identifiers, metadata, "
         "relation targets, scores and pagination for discovery, then read selected notes.",
     ] = False,
+    include_inactive: Annotated[
+        bool,
+        "Include notes whose frontmatter status is superseded or archived. Only matters "
+        "when the search_exclude_inactive setting is on; exact permalink searches and "
+        "status filters always include them.",
+    ] = False,
 ) -> dict[str, Any] | str:
     """Search across all content in the knowledge base with comprehensive syntax support.
 
@@ -1312,6 +1344,9 @@ async def search_notes(
         context: Optional FastMCP context for performance caching.
         compact: Omit content and matched excerpts in either output format. Defaults to False.
                  Use returned note identifiers with read_note for content verification.
+        include_inactive: Include notes whose frontmatter status is superseded or archived.
+                 Only matters when the search_exclude_inactive setting is on (it is off by
+                 default). Exact permalink searches and status filters always include them.
 
     Returns:
         Formatted markdown text (output_format="text"), dict (output_format="json"),
@@ -1476,6 +1511,8 @@ async def search_notes(
             # different accessible workspace holding the same permalink (#1432).
             project, project_id = detected.project, detected.project_id
 
+    exclude_statuses = inactive_statuses_to_exclude(include_inactive)
+
     # Trigger: caller explicitly requests account/workspace-wide search and did not
     # already provide a concrete project route.
     # Why: multi-project fan-out can be slow, so default search remains project-scoped.
@@ -1501,6 +1538,7 @@ async def search_notes(
             context=context,
             compact=compact,
             projects=projects,
+            exclude_statuses=exclude_statuses,
         )
         return all_projects_result
 
@@ -1570,6 +1608,7 @@ async def search_notes(
                     valid_at=valid_at,
                     valid_overlaps=valid_overlaps,
                     time_kind=time_kind,
+                    exclude_statuses=exclude_statuses,
                 )
                 if search_query is None:
                     return _NO_SEARCH_CRITERIA_MESSAGE

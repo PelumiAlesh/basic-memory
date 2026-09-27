@@ -38,20 +38,24 @@ _LIKE_ESCAPE_CHARACTER = "\\"
 
 @dataclass(frozen=True, slots=True)
 class FilterDialect:
-    """The two SQL spellings that differ between backends inside the shared filters."""
+    """The SQL spellings that differ between backends inside the shared filters."""
 
     note_type_value: str
     after_date_condition: str
+    # The owning note's frontmatter status, read off its ``status_owner`` entity row.
+    status_value: str
 
 
 SQLITE_FILTER_DIALECT = FilterDialect(
     note_type_value=SQLITE_NOTE_TYPE_VALUE,
     # datetime() normalizes both sides so ISO strings of mixed precision compare as instants.
     after_date_condition="datetime(search_index.updated_at) > datetime(:after_date)",
+    status_value="json_extract(status_owner.entity_metadata, '$.status')",
 )
 POSTGRES_FILTER_DIALECT = FilterDialect(
     note_type_value=POSTGRES_NOTE_TYPE_VALUE,
     after_date_condition="search_index.updated_at > :after_date",
+    status_value="jsonb_extract_path_text(status_owner.entity_metadata::jsonb, 'status')",
 )
 
 
@@ -236,6 +240,39 @@ def candidate_key_restriction_condition(
     return f"({' OR '.join(branches)})"
 
 
+def excluded_status_condition(
+    exclude_statuses: Sequence[str],
+    params: dict[str, Any],
+    *,
+    scope: ProjectScope,
+    status_value: str,
+) -> str:
+    """Build the SQL dropping every row of a note whose frontmatter status is excluded.
+
+    Status is frontmatter, so it lives on the owning note's entity row; resolving
+    through ``entity_id`` drops the note's observation and relation rows with it.
+
+    The subquery is non-correlated, the shape the note-type and temporal predicates
+    use because ``temporal_filters`` records SQLite refusing a correlated ``EXISTS``
+    beside its per-column ``MATCH``. ``NOT IN`` cannot turn NULL-unknown here: the
+    subquery returns primary keys, and only for notes whose status matched. A note
+    with no status is never in it and always stays.
+    """
+    placeholders: list[str] = []
+    for index, status in enumerate(exclude_statuses):
+        name = f"excluded_status_{index}"
+        params[name] = status
+        placeholders.append(f":{name}")
+    owner_scope = scope.predicate("status_owner.project_id", params)
+    return (
+        "search_index.entity_id NOT IN (\n"
+        "  SELECT status_owner.id\n"
+        "    FROM entity AS status_owner\n"
+        f"   WHERE {owner_scope}\n"
+        f"     AND LOWER({status_value}) IN ({', '.join(placeholders)}))"
+    )
+
+
 def shared_filter_conditions(
     scope: ProjectScope,
     params: dict[str, Any],
@@ -305,5 +342,12 @@ def shared_filter_conditions(
     # temporal_filters for the overlap rule and why the subquery is non-correlated.
     if query.temporal is not None:
         conditions.append(build_temporal_predicate(query.temporal, params, scope=scope))
+
+    if query.exclude_statuses:
+        conditions.append(
+            excluded_status_condition(
+                query.exclude_statuses, params, scope=scope, status_value=dialect.status_value
+            )
+        )
 
     return conditions

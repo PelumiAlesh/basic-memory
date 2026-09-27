@@ -426,6 +426,15 @@ class BasicMemoryConfig(BaseSettings):
         "Valid values: text, vector, hybrid. "
         "When unset, defaults to 'hybrid' if semantic search is enabled, otherwise 'text'.",
     )
+    search_exclude_inactive: bool = Field(
+        default=False,
+        description=(
+            "Leave notes whose frontmatter status is superseded or archived out of "
+            "search_notes and grep results. Exact permalink searches and explicit status "
+            "filters still find them, and include_inactive=true includes them. "
+            "Env: BASIC_MEMORY_SEARCH_EXCLUDE_INACTIVE"
+        ),
+    )
 
     # Reranker configuration (cross-encoder rescoring of the top vector/hybrid candidates)
     reranker_enabled: bool = Field(

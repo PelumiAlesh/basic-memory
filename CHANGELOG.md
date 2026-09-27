@@ -30,6 +30,13 @@
   edits, moves, and deletes; a snapshot failure aborts the tool call. After each write,
   `write_note`, `edit_note`, `move_note`, and `delete_note` read the note back from the
   index and from disk when the project is local (`verify_writes`, default `true`).
+- `search_exclude_inactive` (default `false`) leaves notes whose frontmatter `status` is
+  `superseded` or `archived` out of `search_notes`, ChatGPT `search`, and `grep`
+  (`bm grep` too), in text, vector, and hybrid modes. Exact permalink searches and
+  explicit status filters still find them, and `include_inactive=true` includes them
+  for one call. With the setting off, searches run exactly the same SQL as upstream.
+  The search API gains `exclude_statuses`. Nothing marks a note superseded for you:
+  `supersedes` in frontmatter changes no other note.
 
 ### Features
 

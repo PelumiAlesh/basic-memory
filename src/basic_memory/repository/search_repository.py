@@ -108,6 +108,7 @@ class SearchRepository(Protocol):
         *,
         candidate_keys: Sequence[SearchIndexKey] | None = None,
         trace: SearchTraceCollector | None = None,
+        exclude_statuses: tuple[str, ...] | None = None,
     ) -> List[SearchIndexRow]:
         """Search across indexed content."""
         ...
@@ -128,6 +129,8 @@ class SearchRepository(Protocol):
         retrieval_mode: SearchRetrievalMode = SearchRetrievalMode.FTS,
         min_similarity: Optional[float] = None,
         allow_relaxed: bool = False,
+        *,
+        exclude_statuses: tuple[str, ...] | None = None,
     ) -> int:
         """Count indexed content matching the same filters as search."""
         ...
