@@ -164,9 +164,11 @@ class TestMcpCommandRouting:
         assert env_at_run["FORCE_CLOUD"] == "true"
         assert env_at_run["EXPLICIT"] == "true"
 
-    def test_mcp_streamable_http_forces_local(self, monkeypatch):
+    def test_mcp_streamable_http_forces_local(self, monkeypatch, config_manager):
         """Streamable-HTTP transport should force local routing."""
         env_at_run = {}
+        # The HTTP transports refuse to start without a bearer token.
+        monkeypatch.setenv("BASIC_MEMORY_MCP_HTTP_TOKEN", "routing-test-token-0001")
 
         import basic_memory.cli.commands.mcp as mcp_mod
 
@@ -184,9 +186,10 @@ class TestMcpCommandRouting:
         assert env_at_run["FORCE_LOCAL"] == "true"
         assert env_at_run["EXPLICIT"] == "true"
 
-    def test_mcp_sse_forces_local(self, monkeypatch):
+    def test_mcp_sse_forces_local(self, monkeypatch, config_manager):
         """SSE transport should force local routing."""
         env_at_run = {}
+        monkeypatch.setenv("BASIC_MEMORY_MCP_HTTP_TOKEN", "routing-test-token-0001")
 
         import basic_memory.cli.commands.mcp as mcp_mod
 

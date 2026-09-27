@@ -43,13 +43,17 @@ services:
       
       # Sync delay in milliseconds (adjust for performance vs responsiveness)
       - BASIC_MEMORY_SYNC_DELAY=1000
+
+      # Bearer token every client must send (Authorization: Bearer <token>).
+      # The server refuses to start without one; export it in your shell first.
+      - BASIC_MEMORY_MCP_HTTP_TOKEN=${BASIC_MEMORY_MCP_HTTP_TOKEN:?set BASIC_MEMORY_MCP_HTTP_TOKEN}
     
-    # Port exposure for HTTP transport (only needed if not using STDIO)
+    # Port exposure for HTTP transport (only needed if not using STDIO).
+    # Published on the host's loopback only; clients on this machine use localhost:8000.
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     
     # Command with SSE transport (configurable via environment variables above)
-    # IMPORTANT: The SSE and streamable-http endpoints are not secured
     command: ["basic-memory", "mcp", "--transport", "sse", "--host", "0.0.0.0", "--port", "8000"]
     
     # Container management

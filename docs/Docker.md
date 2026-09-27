@@ -9,15 +9,26 @@ system. This is particularly useful for integrating with existing Dockerized MCP
 
 Basic Memory provides pre-built Docker images on GitHub Container Registry that are automatically updated with each release.
 
+The HTTP server refuses to start without a bearer token, and every client must send it
+as `Authorization: Bearer <token>`. Generate one and export it in the shell you start the
+container from:
+
+```bash
+export BASIC_MEMORY_MCP_HTTP_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+```
+
 1. **Use the official image directly:**
    ```bash
    docker run -d \
      --name basic-memory-server \
-     -p 8000:8000 \
+     -p 127.0.0.1:8000:8000 \
+     -e BASIC_MEMORY_MCP_HTTP_TOKEN \
      -v /path/to/your/obsidian-vault:/app/data:rw \
      -v basic-memory-config:/app/.basic-memory:rw \
      ghcr.io/basicmachines-co/basic-memory:latest
    ```
+   `-e BASIC_MEMORY_MCP_HTTP_TOKEN` with no value passes the exported token through
+   without putting it on the command line.
 
 2. **Or use Docker Compose with the pre-built image:**
    ```yaml
@@ -27,12 +38,13 @@ Basic Memory provides pre-built Docker images on GitHub Container Registry that 
        image: ghcr.io/basicmachines-co/basic-memory:latest
        container_name: basic-memory-server
        ports:
-         - "8000:8000"
+         - "127.0.0.1:8000:8000"
        volumes:
          - /path/to/your/obsidian-vault:/app/data:rw
          - basic-memory-config:/app/.basic-memory:rw
        environment:
          - BASIC_MEMORY_DEFAULT_PROJECT=main
+         - BASIC_MEMORY_MCP_HTTP_TOKEN=${BASIC_MEMORY_MCP_HTTP_TOKEN:?set BASIC_MEMORY_MCP_HTTP_TOKEN}
        restart: unless-stopped
    ```
 
@@ -63,12 +75,14 @@ Basic Memory provides pre-built Docker images on GitHub Container Registry that 
 # Build the image
 docker build -t basic-memory .
 
-# Run with volume mounting
+# Run with volume mounting (export BASIC_MEMORY_MCP_HTTP_TOKEN first, as above)
 docker run -d \
   --name basic-memory-server \
+  -p 127.0.0.1:8000:8000 \
   -v /path/to/your/obsidian-vault:/app/data:rw \
   -v basic-memory-config:/app/.basic-memory:rw \
   -e BASIC_MEMORY_DEFAULT_PROJECT=main \
+  -e BASIC_MEMORY_MCP_HTTP_TOKEN \
   basic-memory
 ```
 
@@ -178,6 +192,12 @@ environment:
 
   # Sync delay in milliseconds
   - BASIC_MEMORY_SYNC_DELAY=1000
+
+  # Required: bearer token clients send as "Authorization: Bearer <token>"
+  - BASIC_MEMORY_MCP_HTTP_TOKEN=${BASIC_MEMORY_MCP_HTTP_TOKEN:?set BASIC_MEMORY_MCP_HTTP_TOKEN}
+
+  # Optional: Host names clients may use besides localhost (others get 421)
+  # - BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS=["memory.lan"]
 ```
 
 ## File Permissions
@@ -206,12 +226,13 @@ services:
         GID: 1000  # Replace with your GID
     container_name: basic-memory-server
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - /path/to/your/obsidian-vault:/app/data:rw
       - basic-memory-config:/app/.basic-memory:rw
     environment:
       - BASIC_MEMORY_DEFAULT_PROJECT=main
+      - BASIC_MEMORY_MCP_HTTP_TOKEN=${BASIC_MEMORY_MCP_HTTP_TOKEN:?set BASIC_MEMORY_MCP_HTTP_TOKEN}
     restart: unless-stopped
 ```
 
@@ -254,6 +275,10 @@ When using Docker Desktop on Windows, ensure the directories are shared:
 3. **Network Connectivity:**
     - For HTTP transport, ensure port 8000 is exposed
     - Check firewall settings
+    - The container exits at start with "need a bearer token": set `BASIC_MEMORY_MCP_HTTP_TOKEN`
+    - `401 Unauthorized`: the client is not sending `Authorization: Bearer <token>`, or the token differs
+    - `421 Misdirected Request`: the client reached the server under a host name other than
+      localhost; add it to `BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS` (a JSON list)
 
 ### Debug Mode
 
@@ -280,10 +305,13 @@ docker-compose logs -f basic-memory
    Ensure mounted directories have appropriate permissions and don't expose sensitive data. With the non-root container, files will be created with the specified user ownership.
 
 3. **Network Security:**
-   If using HTTP transport, consider using reverse proxy with SSL/TLS and authentication if the endpoint is available on
-   a network.
+   Every HTTP request must carry the bearer token, and the server checks the Host and Origin
+   headers against localhost plus `BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS` and
+   `BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS`. The token travels in clear text over plain HTTP, so
+   keep the port on loopback (`127.0.0.1:8000:8000`) or put TLS in front of it.
 
-4. **IMPORTANT:** The HTTP endpoints have no authorization. They should not be exposed on a public network.  
+4. **IMPORTANT:** Anyone holding the token can read and rewrite every note. Keep it out of
+   images, command lines, and shared files.
 
 ## Integration Examples
 
@@ -296,7 +324,8 @@ The recommended way to connect Claude Desktop to the containerized Basic Memory 
    docker-compose up -d
    ```
 
-2. **Configure Claude Desktop** to use mcp-proxy:
+2. **Configure Claude Desktop** to use mcp-proxy, which sends `API_ACCESS_TOKEN` as the
+   bearer token:
    ```json
    {
      "mcpServers": {
@@ -305,7 +334,10 @@ The recommended way to connect Claude Desktop to the containerized Basic Memory 
          "args": [
            "mcp-proxy",
            "http://localhost:8000/mcp"
-         ]
+         ],
+         "env": {
+           "API_ACCESS_TOKEN": "<the value of BASIC_MEMORY_MCP_HTTP_TOKEN>"
+         }
        }
      }
    }

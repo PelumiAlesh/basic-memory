@@ -399,6 +399,36 @@ def test_config_get_shows_not_set_for_unset_secret(runner, write_config):
     assert "cloud_api_key = (not set)" in result.output
 
 
+def test_config_list_masks_the_http_token_and_leaves_client_tokens_out(runner, write_config):
+    write_config(
+        _base_config(
+            mcp_http_token="shared-http-token-secret",
+            mcp_http_client_tokens={"cursor": "cursor-http-token-secret"},
+        )
+    )
+
+    result = runner.invoke(app, ["config", "list", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert "http-token-secret" not in result.output
+    rows = {row["key"]: row for row in json.loads(result.output)}
+    assert rows["mcp_http_token"]["value"] == "********"
+    assert rows["mcp_http_host"]["value"] == "127.0.0.1"
+    assert "mcp_http_client_tokens" not in rows
+
+
+def test_blank_secret_reads_as_not_set_rather_than_masked(runner, write_config, monkeypatch):
+    write_config(_base_config(mcp_http_token=""))
+    monkeypatch.setenv("BASIC_MEMORY_CLOUD_API_KEY", "")
+
+    listed = runner.invoke(app, ["config", "list", "--json"])
+    got = runner.invoke(app, ["config", "get", "cloud_api_key"])
+
+    rows = {row["key"]: row for row in json.loads(listed.output)}
+    assert rows["mcp_http_token"]["value"] == "(not set)"
+    assert "Overridden by $BASIC_MEMORY_CLOUD_API_KEY = (not set)" in got.output
+
+
 # ---------------------------------------------------------------------------
 # Env var overrides
 # ---------------------------------------------------------------------------

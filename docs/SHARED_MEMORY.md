@@ -67,3 +67,50 @@ bm_created_by_client: cursor                 # the app that wrote it first
 - `read_note` shows the keys in the note's frontmatter (text output) and in `frontmatter`
   (JSON output). Search does not print them on each hit, but you can filter on them, for
   example `search_notes(metadata_filters={"bm_source_client": "chatgpt"})`.
+
+## HTTP transport: bearer token required
+
+Stdio (`basic-memory mcp` with no `--transport`) is unchanged and needs no token. The HTTP
+transports (`--transport streamable-http` and `--transport sse`) listen on a TCP port, so the
+fork puts a bearer-token gate in front of them.
+
+| Setting | Default | Env |
+| --- | --- | --- |
+| `mcp_http_host` | `127.0.0.1` | `BASIC_MEMORY_MCP_HTTP_HOST` |
+| `mcp_http_token` | not set | `BASIC_MEMORY_MCP_HTTP_TOKEN` |
+| `mcp_http_client_tokens` | `{}` | `BASIC_MEMORY_MCP_HTTP_CLIENT_TOKENS` (JSON object) |
+| `mcp_http_allowed_hosts` | `[]` | `BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS` (JSON list) |
+| `mcp_http_allowed_origins` | `[]` | `BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS` (JSON list) |
+
+- Without a token the server does not start. `basic-memory mcp --transport streamable-http`
+  exits with status 1 and says how to set one. A token must be at least 16 characters:
+
+  ```bash
+  python3 -c 'import secrets; print(secrets.token_urlsafe(32))'
+  ```
+
+- Every HTTP request and WebSocket must send `Authorization: Bearer <token>`. Anything else gets
+  401 with `WWW-Authenticate: Bearer realm="basic-memory"`. The one exception is exactly
+  `/.well-known/oauth-protected-resource`, which answers 404 without a token. There is no OAuth
+  server, and the 404 tells an MCP client that probes the path to use the header it was
+  configured with.
+- A path with a `..` segment gets 400 before routing, however it is percent-encoded.
+- The server binds `127.0.0.1` unless `--host` or `mcp_http_host` says otherwise. A wider bind
+  still needs the token.
+- The Host header must be a loopback name, the local address the request arrived on, or listed
+  in `mcp_http_allowed_hosts` (else 421). A browser Origin must be the request's own origin, a
+  loopback origin on a loopback Host, or listed in `mcp_http_allowed_origins` (else 403). Both
+  checks apply to SSE and streamable HTTP.
+- `mcp_http_client_tokens` gives each app its own token, for example
+  `{"cursor": "...", "claude-code": "..."}`. Names are slugged the same way as clientInfo names
+  (see the slug list under Provenance). A write made with an app's token is recorded as that app
+  in provenance, whatever its clientInfo says. The shared `mcp_http_token` names no app, so
+  provenance falls back to clientInfo. Every configured token must be different.
+- Tokens are compared in constant time and never logged. `bm config list` and `bm config get`
+  show `mcp_http_token` as `********`, and `basic_memory_diagnostics` (which every connected app
+  can call) leaves all of them out. Basic Memory writes `config.json` with mode 0600 inside a
+  0700 directory. Put tokens there or in the environment. `bm config set mcp_http_token <token>`
+  works but leaves the token in your shell history, and `bm config set` does not take the host,
+  origin, and per-app settings because they are lists and maps.
+- Plain HTTP carries the token in clear text. Keep the server on loopback, or put TLS in front
+  of it. For Docker, see [Docker.md](Docker.md).

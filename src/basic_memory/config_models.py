@@ -746,6 +746,51 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    mcp_http_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Address the MCP HTTP and SSE transports bind to when --host is omitted. "
+            "A wider bind still needs a bearer token and an allowed Host header. "
+            "Env: BASIC_MEMORY_MCP_HTTP_HOST"
+        ),
+    )
+
+    mcp_http_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Shared bearer token for the MCP HTTP and SSE transports. Without it or "
+            "mcp_http_client_tokens those transports refuse to start. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN"
+        ),
+    )
+
+    mcp_http_client_tokens: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-app bearer tokens as a {client: token} map. Writes made with one are "
+            "attributed to that client, whatever clientInfo says. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_CLIENT_TOKENS (JSON object)"
+        ),
+    )
+
+    mcp_http_allowed_hosts: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Host header values the MCP HTTP transports accept besides loopback and the "
+            "bound address. Other hosts get 421. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS (JSON list)"
+        ),
+    )
+
+    mcp_http_allowed_origins: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Browser Origin values the MCP HTTP transports accept besides same-origin "
+            "and loopback. Other origins get 403. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS (JSON list)"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
