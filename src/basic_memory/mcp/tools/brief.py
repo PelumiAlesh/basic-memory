@@ -153,12 +153,14 @@ async def build_brief(
 
 
 @mcp.tool(
+    title="Get Brief",
+    tags={"context", "brief"},
     annotations={
         "title": "Get Brief",
         "readOnlyHint": True,
         "destructiveHint": False,
         "openWorldHint": False,
-    }
+    },
 )
 async def get_brief(
     project: str | None = None,
