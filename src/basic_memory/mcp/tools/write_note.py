@@ -13,6 +13,8 @@ from pydantic import AliasChoices, BeforeValidator, Field
 from basic_memory.config import ConfigManager
 from basic_memory.file_utils import remove_frontmatter
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
+from basic_memory.shared_memory.provenance import stamp_provenance
+from basic_memory.shared_memory.request_client import current_client_slug, remember_mcp_client
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -429,6 +431,14 @@ async def write_note(
                 entity_metadata.update(metadata)
             if tag_list:
                 entity_metadata["tags"] = tag_list
+            # Provenance is recorded only when this MCP session named its client.
+            # The API and CLI never reach this branch, so their writes stay unchanged.
+            await remember_mcp_client(context)
+            entity_metadata = stamp_provenance(
+                entity_metadata,
+                client=current_client_slug(),
+                enabled=ConfigManager().config.record_provenance,
+            )
 
             entity = Entity(
                 title=title,
