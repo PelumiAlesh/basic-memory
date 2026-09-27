@@ -110,6 +110,10 @@ class SearchQuery(BaseModel):
     file_path_prefix: Optional[str] = None
     tags: Optional[List[str]] = None  # Convenience tag filter
     status: Optional[str] = None  # Convenience status filter
+    # When false (the default) and search_exclude_inactive is on, notes whose
+    # frontmatter status is superseded or archived drop out of discovery search.
+    # Exact permalink lookup is unaffected. Set true to see them.
+    include_inactive: bool = False
     retrieval_mode: SearchRetrievalMode = SearchRetrievalMode.FTS
     min_similarity: Optional[float] = None  # Per-query override for semantic_min_similarity
 

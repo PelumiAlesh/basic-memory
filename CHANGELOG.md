@@ -4,6 +4,15 @@
 
 ### Features
 
+- Writing a `decision` or `preference` note returns similar active notes flagged
+  `possible conflict` when `conflict_check_on_write` is true (the default).
+  Set it false to keep only the existing similar-note hint on create.
+  Discovery search hides `status: superseded` and `status: archived` when
+  `search_exclude_inactive` is true (the default). Pass `include_inactive=true`
+  or an explicit `status` filter to see them. Exact permalink lookup is
+  unchanged. A `supersedes` frontmatter value (string or list of permalinks
+  or titles) marks those notes `status: superseded` after the write.
+
 - Optional review inbox (`review_inbox_enabled`, default false). In `status`
   mode (the default) MCP-created notes with no caller-supplied status get
   `status: unreviewed`. In `folder` mode, notes with an empty directory land

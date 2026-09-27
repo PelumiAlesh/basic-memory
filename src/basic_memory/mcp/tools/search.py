@@ -70,6 +70,7 @@ def _build_search_query(
     valid_at: str | None,
     valid_overlaps: str | None,
     time_kind: str | None,
+    include_inactive: bool = False,
 ) -> SearchQuery | None:
     """Map tool parameters onto one ``SearchQuery``; ``None`` when nothing narrows the search.
 
@@ -131,6 +132,7 @@ def _build_search_query(
         search_query.valid_overlaps = valid_overlaps
     if time_kind is not None:
         search_query.time_kind = time_kind
+    search_query.include_inactive = include_inactive
 
     if search_query.no_criteria():
         return None
@@ -808,6 +810,7 @@ async def _search_all_projects(
     context: Context | None,
     compact: bool = False,
     projects: list[str] | None = None,
+    include_inactive: bool = False,
 ) -> dict[str, Any] | str:
     """Search every accessible project, one query per database.
 
@@ -854,6 +857,7 @@ async def _search_all_projects(
         valid_at=valid_at,
         valid_overlaps=valid_overlaps,
         time_kind=time_kind,
+        include_inactive=include_inactive,
     )
     if search_query is None:
         return _NO_SEARCH_CRITERIA_MESSAGE
@@ -1118,6 +1122,12 @@ async def search_notes(
         bool,
         "Omit note bodies and matched excerpts from results. Keep identifiers, metadata, "
         "relation targets, scores and pagination for discovery, then read selected notes.",
+    ] = False,
+    include_inactive: Annotated[
+        bool,
+        "When false (the default), notes with status superseded or archived are "
+        "left out of discovery search. Set true to include them. Exact permalink "
+        "lookup always includes them.",
     ] = False,
 ) -> dict[str, Any] | str:
     """Search across all content in the knowledge base with comprehensive syntax support.
@@ -1504,6 +1514,7 @@ async def search_notes(
             context=context,
             compact=compact,
             projects=projects,
+            include_inactive=include_inactive,
         )
         return all_projects_result
 
@@ -1573,6 +1584,7 @@ async def search_notes(
                     valid_at=valid_at,
                     valid_overlaps=valid_overlaps,
                     time_kind=time_kind,
+                    include_inactive=include_inactive,
                 )
                 if search_query is None:
                     return _NO_SEARCH_CRITERIA_MESSAGE

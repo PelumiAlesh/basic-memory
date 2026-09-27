@@ -827,6 +827,23 @@ class BasicMemoryConfig(BaseSettings):
         description="Folder used when review_inbox_mode is folder. Env: BASIC_MEMORY_REVIEW_INBOX_FOLDER",
     )
 
+    conflict_check_on_write: bool = Field(
+        default=True,
+        description=(
+            "When writing a decision or preference note, include similar active notes "
+            "flagged as possible conflicts in the tool response. "
+            "Env: BASIC_MEMORY_CONFLICT_CHECK_ON_WRITE"
+        ),
+    )
+    search_exclude_inactive: bool = Field(
+        default=True,
+        description=(
+            "Hide notes with status superseded or archived from discovery search. "
+            "Exact permalink lookup still finds them. Pass include_inactive=true to "
+            "search them. Env: BASIC_MEMORY_SEARCH_EXCLUDE_INACTIVE"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

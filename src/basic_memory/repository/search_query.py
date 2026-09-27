@@ -31,6 +31,8 @@ class PreparedSearchQuery:
     temporal: TemporalFilter | None = None
     retrieval_mode: SearchRetrievalMode = SearchRetrievalMode.FTS
     min_similarity: float | None = None
+    # Lowercased frontmatter statuses to hide. None means no exclusion.
+    exclude_statuses: tuple[str, ...] | None = None
 
     @property
     def has_filters(self) -> bool:
@@ -51,6 +53,7 @@ class PreparedSearchQuery:
                 self.metadata_filters,
                 self.file_path_prefix,
                 self.temporal,
+                self.exclude_statuses,
             )
         )
 
