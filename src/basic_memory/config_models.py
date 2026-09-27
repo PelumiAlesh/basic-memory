@@ -855,6 +855,27 @@ class BasicMemoryConfig(BaseSettings):
         ),
         gt=0,
     )
+    git_autocommit: bool = Field(
+        default=False,
+        description=(
+            "After an MCP write or edit, commit the note file in the project git "
+            "repository. Debounced. Never pushes unless git_auto_push is true and "
+            "a remote exists. Env: BASIC_MEMORY_GIT_AUTOCOMMIT"
+        ),
+    )
+    git_autocommit_debounce_seconds: float = Field(
+        default=2.0,
+        description="How long to wait for more writes before one commit. Env: BASIC_MEMORY_GIT_AUTOCOMMIT_DEBOUNCE_SECONDS",
+        ge=0,
+    )
+    git_auto_push: bool = Field(
+        default=False,
+        description=(
+            "Push after an agent commit or undo. Does nothing when the repository "
+            "has no remote. Env: BASIC_MEMORY_GIT_AUTO_PUSH"
+        ),
+    )
+
     client_visibility: Dict[str, ClientVisibilityPolicy] = Field(
         default_factory=dict,
         description=(
