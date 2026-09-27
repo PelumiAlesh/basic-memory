@@ -1,3 +1,4 @@
+from pathlib import Path
 from textwrap import dedent
 from typing import Any, Annotated, Optional, Literal
 
@@ -13,7 +14,14 @@ from basic_memory.mcp.project_context import (
     resolve_project_and_path,
 )
 from basic_memory.mcp.server import mcp
+from basic_memory.mcp.write_verification import verify_note_delete
 from basic_memory.schemas.project_info import ProjectItem
+from basic_memory.shared_memory.git_sync import (
+    GitMemoryError,
+    schedule_autocommit,
+    snapshot_before_write,
+)
+from basic_memory.shared_memory.request_client import current_client_slug
 from basic_memory.utils import generate_permalink, normalize_project_reference
 from basic_memory.workspace_context import current_workspace_permalink_context
 
@@ -324,6 +332,18 @@ async def delete_note(
                     if is_memory_url
                     else target_identifier
                 )
+                if ConfigManager().config.git_autocommit and active_project.home:
+                    try:
+                        snapshot_before_write(
+                            Path(active_project.home),
+                            directory_identifier,
+                            client=current_client_slug(),
+                            note=directory_identifier,
+                            operation="directory delete",
+                            enabled=True,
+                        )
+                    except GitMemoryError as exc:
+                        logger.warning(f"git snapshot skipped: {exc}")
                 result = await knowledge_client.delete_directory(directory_identifier)
                 if output_format == "json":
                     response = {
@@ -422,10 +442,13 @@ delete_note("path/to/file.md")
         note_title = None
         note_permalink = None
         note_file_path = None
+        app_config = ConfigManager().config
         try:
             # Resolve identifier to entity ID
             entity_id = await knowledge_client.resolve_entity(target_identifier, strict=True)
-            if output_format == "json":
+            # JSON output, verification, and the git snapshot all need the note's
+            # path; one read covers them.
+            if output_format == "json" or app_config.verify_writes or app_config.git_autocommit:
                 entity = await knowledge_client.get_entity(entity_id)
                 note_title = entity.title
                 note_permalink = entity.permalink
@@ -459,6 +482,22 @@ delete_note("path/to/file.md")
             )
 
         try:
+            # Trigger: git autocommit is on and the note file exists locally.
+            # Why: a delete is the most destructive write there is; its bytes go
+            # into history before the API removes them (#1156).
+            if app_config.git_autocommit and note_file_path and active_project.home:
+                try:
+                    snapshot_before_write(
+                        Path(active_project.home),
+                        note_file_path,
+                        client=current_client_slug(),
+                        note=note_title or note_file_path,
+                        operation="delete",
+                        enabled=True,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git snapshot skipped: {exc}")
+
             # Call the DELETE endpoint
             result = await knowledge_client.delete_entity(entity_id)
 
@@ -466,13 +505,49 @@ delete_note("path/to/file.md")
                 logger.info(
                     f"Successfully deleted note: {identifier} in project: {active_project.name}"
                 )
+                verification = None
+                if app_config.verify_writes:
+                    verification = await verify_note_delete(
+                        knowledge_client,
+                        external_id=entity_id,
+                        file_path=note_file_path,
+                        project_home=active_project.home,
+                    )
+                    if verification.status == "failed":
+                        logger.warning(
+                            f"delete_note verification failed project={active_project.name} "
+                            f"identifier={identifier}: {verification.error}"
+                        )
+                if app_config.git_autocommit and note_file_path and active_project.home:
+                    try:
+                        schedule_autocommit(
+                            Path(active_project.home),
+                            note_file_path,
+                            client=current_client_slug(),
+                            note=note_title or note_file_path,
+                            enabled=True,
+                            debounce_seconds=app_config.git_autocommit_debounce_seconds,
+                            auto_push=app_config.git_auto_push,
+                        )
+                    except GitMemoryError as exc:
+                        logger.warning(f"git autocommit skipped: {exc}")
                 if output_format == "json":
-                    return {
-                        "deleted": True,
+                    payload: dict[str, Any] = {
+                        "deleted": verification is None or verification.status != "failed",
                         "title": note_title,
                         "permalink": note_permalink,
                         "file_path": note_file_path,
                     }
+                    if verification is not None:
+                        payload["verification"] = verification.as_dict()
+                        if verification.status == "failed":
+                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    return payload
+                if verification is not None and verification.status == "failed":
+                    return (
+                        f"# Delete reported but verification failed\n\n"
+                        f"`{identifier}`: {verification.error}\n{verification.as_text()}"
+                    )
                 return True
             else:
                 logger.warning(  # pragma: no cover

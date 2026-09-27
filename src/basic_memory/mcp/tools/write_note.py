@@ -19,7 +19,12 @@ from basic_memory.file_utils import (
     remove_frontmatter,
 )
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
-from basic_memory.shared_memory.git_sync import GitMemoryError, schedule_autocommit
+from basic_memory.mcp.write_verification import verify_note_write
+from basic_memory.shared_memory.git_sync import (
+    GitMemoryError,
+    schedule_autocommit,
+    snapshot_before_write,
+)
 from basic_memory.shared_memory.conflicts import (
     format_possible_conflicts,
     supersedes_targets,
@@ -484,6 +489,23 @@ async def write_note(
             # Use typed KnowledgeClient for API calls
             knowledge_client = KnowledgeClient(client, active_project.external_id)
 
+            # Trigger: git autocommit is on and the target file already exists locally.
+            # Why: an overwrite must be undoable even if the process dies before the
+            # post-write commit (#1156). The snapshot lands in history first.
+            # Outcome: a `memory(<client>): snapshot` commit, never pushed.
+            if app_config.git_autocommit and effective_overwrite and active_project.home:
+                try:
+                    snapshot_before_write(
+                        Path(active_project.home),
+                        entity.file_path,
+                        client=current_client_slug(),
+                        note=title,
+                        operation="overwrite",
+                        enabled=True,
+                    )
+                except GitMemoryError as exc:
+                    logger.warning(f"git snapshot skipped: {exc}")
+
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
             outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
@@ -683,6 +705,26 @@ async def write_note(
             if superseded:
                 summary.append("\n## Supersedes\n" + "\n".join(f"- {item}" for item in superseded))
 
+            # --- Write verification ---
+            # Trigger: verify_writes is on (the default).
+            # Why: "saved" must mean the index and the file hold what was sent, not
+            # that the API accepted it (#1341, #1531, #1479, #1585).
+            # Outcome: a Verification section with verified, pending, or failed.
+            verification = None
+            if app_config.verify_writes:
+                verification = await verify_note_write(
+                    knowledge_client,
+                    external_id=result.external_id,
+                    expected_content=content,
+                    project_home=active_project.home,
+                )
+                summary.append(verification.as_text())
+                if verification.status == "failed":
+                    logger.warning(
+                        f"write_note verification failed project={active_project.name} "
+                        f"permalink={response_permalink}: {verification.error}"
+                    )
+
             # Log the response with structured data
             logger.debug(
                 f"MCP tool response: tool=write_note project={active_project.name} action={action} permalink={response_permalink} observations_count={len(result.observations)} relations_count={len(result.relations)} resolved_relations={resolved} unresolved_relations={unresolved} similar_notes_count={len(similar_notes)}"
@@ -724,6 +766,10 @@ async def write_note(
                     ]
                 if superseded:
                     payload["supersedes"] = superseded
+                if verification is not None:
+                    payload["verification"] = verification.as_dict()
+                    if verification.status == "failed":
+                        payload["error"] = "WRITE_VERIFICATION_FAILED"
                 return payload
 
             summary_result = "\n".join(summary)
