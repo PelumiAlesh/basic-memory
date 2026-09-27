@@ -7,7 +7,7 @@ Origin gets, and which app a write is attributed to.
 
 import asyncio
 import socket
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -18,6 +18,7 @@ import pytest
 import uvicorn
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
+from loguru import logger
 
 import basic_memory.mcp.tools  # noqa: F401 - registers the tools on the server
 from basic_memory.config import BasicMemoryConfig
@@ -93,6 +94,38 @@ async def _raw_status(base_url: str, request_target: str) -> int:
     return int(status_line.split()[1])
 
 
+async def _websocket_handshake_status(base_url: str, headers: dict[str, str]) -> int:
+    host, port = base_url.removeprefix("http://").split(":")
+    reader, writer = await asyncio.open_connection(host, int(port))
+    request_lines = [
+        "GET /mcp HTTP/1.1",
+        f"Host: {host}:{port}",
+        "Upgrade: websocket",
+        "Connection: Upgrade",
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+        "Sec-WebSocket-Version: 13",
+        *(f"{name}: {value}" for name, value in headers.items()),
+    ]
+    writer.write(("\r\n".join(request_lines) + "\r\n\r\n").encode())
+    await writer.drain()
+    status_line = await reader.readline()
+    writer.close()
+    await writer.wait_closed()
+    return int(status_line.split()[1])
+
+
+@pytest.fixture
+def gate_refusals() -> Iterator[list[str]]:
+    refusals: list[str] = []
+    handler_id = logger.add(
+        lambda message: refusals.append(str(message)),
+        level="INFO",
+        filter=lambda record: "without a valid bearer token" in record["message"],
+    )
+    yield refusals
+    logger.remove(handler_id)
+
+
 async def _write_as(base_url: str, token: str, app_name: str, project: str, title: str) -> None:
     transport = StreamableHttpTransport(f"{base_url}/mcp", auth=token)
     async with Client(
@@ -138,6 +171,25 @@ async def test_discovery_path_is_the_only_open_door(app, test_project) -> None:
     assert suffixed.status_code == 401
     assert climbing == 400
     assert encoded == 400
+
+
+@pytest.mark.asyncio
+async def test_websocket_upgrade_needs_a_token_too(
+    app, test_project, gate_refusals: list[str]
+) -> None:
+    async with _serving() as base_url:
+        without_token = await _websocket_handshake_status(base_url, {})
+        refused_by_gate = len(gate_refusals)
+        with_token = await _websocket_handshake_status(
+            base_url, {"Authorization": f"Bearer {SHARED_TOKEN}"}
+        )
+
+    # Both handshakes fail, since no WebSocket route exists. The gate's log line shows
+    # which one it stopped, so a WebSocket route added later is still behind the token.
+    assert without_token == 403
+    assert refused_by_gate == 1
+    assert with_token == 403
+    assert len(gate_refusals) == 1
 
 
 @pytest.mark.asyncio
