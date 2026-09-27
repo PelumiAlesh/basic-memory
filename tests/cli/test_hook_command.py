@@ -1334,6 +1334,12 @@ def test_install_claude_writes_hooks_into_user_settings() -> None:
         "basic-memory hook pre-compact --harness claude"
     )
     assert pre_compact[0]["hooks"][0]["timeout"] == 120
+    assert data["hooks"]["Stop"][0]["hooks"][0]["command"] == (
+        "basic-memory hook stop --harness claude"
+    )
+    assert data["hooks"]["SessionEnd"][0]["hooks"][0]["command"] == (
+        "basic-memory hook stop --harness claude"
+    )
 
 
 def test_install_codex_writes_hooks_json_with_matchers() -> None:
@@ -1509,6 +1515,7 @@ def test_hook_install_works_despite_broken_global_config(bm_home: Path) -> None:
     assert result.exit_code == 0
     hooks = _read_json(_claude_settings_path())["hooks"]
     assert "SessionStart" in hooks and "PreCompact" in hooks
+    assert "Stop" in hooks and "SessionEnd" in hooks
 
 
 def test_run_fail_open_swallows_systemexit() -> None:

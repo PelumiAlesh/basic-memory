@@ -12,9 +12,10 @@ from basic_memory.cli.commands.hook import (
 
 def test_cursor_commands_use_cursor_event_names() -> None:
     commands = _cursor_hook_commands()
-    assert set(commands) == {"sessionStart", "preCompact"}
+    assert set(commands) == {"sessionStart", "preCompact", "stop"}
     session = commands["sessionStart"][0]["command"]
     assert "hook session-start --harness cursor" in session
+    assert "hook stop --harness cursor" in commands["stop"][0]["command"]
     assert "hooks" not in commands["sessionStart"][0]
 
 

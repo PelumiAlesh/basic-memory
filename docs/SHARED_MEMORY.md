@@ -45,11 +45,40 @@ file. JSON output carries the same under `verification`, sets
 Cloud projects report `disk: remote`. This is the answer to the false
 "saved" reports in upstream #1341, #1531, #1479, and #1585.
 
-## 2. Secure HTTP
+## 2. Secure HTTP and one shared server
 
 `basic-memory mcp --transport streamable-http` binds to `127.0.0.1` unless
 you pass `--host` or set `mcp_http_host`. A non-loopback bind without a token
 logs a warning.
+
+### Multi-client: one process
+
+Run **one** long-lived HTTP server and point every client at it. Do not start
+a separate `basic-memory mcp` (stdio) per client against the same vault.
+
+```bash
+bm config set mcp_shared_server true
+export BASIC_MEMORY_MCP_HTTP_TOKEN="$(openssl rand -hex 32)"
+export BASIC_MEMORY_MCP_HTTP_CLIENTS="cursor:$BASIC_MEMORY_MCP_HTTP_TOKEN,claude-code:$(openssl rand -hex 32),chatgpt:$(openssl rand -hex 32)"
+basic-memory mcp --transport streamable-http --port 8000
+```
+
+With `mcp_shared_server=true` (default `false`, so single-client stdio is
+unchanged):
+
+- The HTTP process writes a claim under the config dir (`mcp-shared.json` +
+  lock). SQLite already uses WAL; this process also serializes canonical
+  note writes in-memory so two clients cannot interleave materialization.
+  Reads are not serialized. No `SELECT FOR UPDATE` on derived-state paths.
+- A second MCP process (stdio or another HTTP) fails with a clear message
+  naming the living URL. Connect clients to that URL with their bearer
+  token instead.
+- `list_clients` and `bm status --shared` show which client slugs have
+  connected and what each last wrote. Tokens are never logged or shown.
+
+Per-agent private scratch is `visibility: private` plus a
+`client_visibility` policy (or a folder under `deny_path_prefixes`). There
+is no second scratch system.
 
 Host and Origin are always checked (FastMCP's guard in strict mode). The
 Host header must be loopback, the bound address, or a name in
@@ -216,6 +245,7 @@ This writes `~/.cursor/hooks.json`:
 - `sessionStart` → `bm hook session-start --harness cursor`
   (stdout is `{"additional_context": "<brief>"}`)
 - `preCompact` → `bm hook pre-compact --harness cursor`
+- `stop` → `bm hook stop --harness cursor` (session capture when enabled)
 
 Set the project in `.cursor/basic-memory.json` or
 `~/.cursor/basic-memory.json`:
@@ -228,6 +258,16 @@ Cursor cloud agents do not run user hooks, and they do not fire
 `sessionStart`. Copy the same entries into the repo's `.cursor/hooks.json`
 if a cloud agent should run them. `beforeSubmitPrompt` is not installed;
 capture is the session-start envelope.
+
+## 9b. End-of-session capture
+
+`session_capture_enabled` defaults to `false`. When true, Cursor `stop` and
+Claude Code `Stop` / `SessionEnd` write a **short** session summary into the
+review inbox (`status: unreviewed`, or under `inbox/` in folder mode). The
+note is `visibility: private`, tagged with the client, and keyed by harness
+session id so a second fire is a no-op. The body is a clipped structural
+summary of transcript turns — not private note contents. Codex `stop`
+remains `{"continue":true}` for upgraded installs.
 
 ## 10. Claude Code transcripts
 
