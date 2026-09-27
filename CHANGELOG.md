@@ -10,6 +10,12 @@
   periodic update check, the stdio MCP background update, and `bm update` no longer
   replace a fork build with the upstream release; `bm update --force` does so on purpose.
   See `docs/SHARED_MEMORY.md`.
+- MCP `write_note` and `edit_note` record which app wrote a note in fork-owned
+  frontmatter keys: `bm_source_client`, `bm_updated`, and `bm_created_by_client` (the
+  first writer, kept across later edits and overwrites). The user's own `updated`,
+  `created`, and `modified` keys are never written, and a stamped edit rewrites only the
+  `bm_*` lines. Writes from apps that send no MCP clientInfo are unchanged. Setting:
+  `record_provenance` (default `true`).
 
 ### Features
 

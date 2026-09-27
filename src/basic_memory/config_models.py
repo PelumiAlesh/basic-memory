@@ -733,6 +733,19 @@ class BasicMemoryConfig(BaseSettings):
         description="Default cloud workspace tenant_id. Set by 'bm cloud workspace set-default'.",
     )
 
+    # --- Shared memory fork ---
+    # Settings for the PelumiAlesh fork's shared-memory features (docs/SHARED_MEMORY.md).
+
+    record_provenance: bool = Field(
+        default=True,
+        description=(
+            "On MCP write_note and edit_note, record bm_source_client, bm_updated, and "
+            "bm_created_by_client in frontmatter when the app names itself (MCP clientInfo). "
+            "Writes from apps that send no clientInfo are unchanged. "
+            "Env: BASIC_MEMORY_RECORD_PROVENANCE"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",

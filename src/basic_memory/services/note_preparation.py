@@ -44,6 +44,11 @@ from basic_memory.schemas import Entity as EntitySchema
 from basic_memory.schemas.base import NoteType, Permalink
 from basic_memory.services.exceptions import EntityAlreadyExistsError
 from basic_memory.services.file_service import FileService
+from basic_memory.shared_memory.provenance import (
+    PROVENANCE_KEYS,
+    keep_first_writer,
+    write_frontmatter_lines,
+)
 from basic_memory.utils import build_canonical_permalink
 from basic_memory.workspace_context import workspace_slug_for_canonical_permalinks
 
@@ -454,6 +459,7 @@ async def prepare_update_entity_content(
     post = await schema_to_markdown(schema)
     merged_metadata = deepcopy(existing_metadata)
     merged_metadata.update(post.metadata)
+    keep_first_writer(existing_metadata, merged_metadata)
     merged_metadata["permalink"] = resolved_permalink
     merged_post = frontmatter.Post(post.content)
     merged_post.metadata.update(merged_metadata)
@@ -719,6 +725,15 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
     sanitized = {k: v for k, v in metadata.items() if k not in _METADATA_IDENTITY_FIELDS}
     if not sanitized:
         return markdown_content
+    # Trigger: the merge carries only provenance keys (an edit from a named app that
+    #   passed no metadata of its own) into a note that already has frontmatter.
+    # Why: the full merge below re-serializes the YAML, which would reformat the
+    #   user's own values on every stamped edit.
+    # Outcome: only the bm_* lines change; the first writer is still kept.
+    if sanitized.keys() <= PROVENANCE_KEYS and has_frontmatter(markdown_content):
+        provenance = dict(sanitized)
+        keep_first_writer(parse_frontmatter(markdown_content), provenance)
+        return write_frontmatter_lines(markdown_content, provenance)
     if "type" in sanitized:
         raw_note_type = sanitized["type"]
         if not isinstance(raw_note_type, str):
@@ -747,6 +762,7 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
 
     merged_metadata = deepcopy(current_metadata)
     merged_metadata.update(sanitized)
+    keep_first_writer(current_metadata, merged_metadata)
 
     post = frontmatter.Post(body)
     post.metadata.update(merged_metadata)
