@@ -8,8 +8,9 @@ first (bounded). A cloud project has no local file; its disk check reports
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from fastmcp.exceptions import ToolError
 from httpx import HTTPStatusError
@@ -35,6 +36,26 @@ class EntityReader(Protocol):
 
 def verification_enabled() -> bool:
     return ConfigManager().config.verify_writes
+
+
+def raise_if_verification_failed(
+    verification: WriteVerification | None,
+    *,
+    output_format: str,
+    payload: dict[str, Any],
+    text: str,
+) -> None:
+    """A failed read-back is an error. Pending means the file is still being written."""
+    if verification is None or verification.status != "failed":
+        return
+    failed = {
+        **payload,
+        "verification": verification.as_dict(),
+        "error": "WRITE_VERIFICATION_FAILED",
+    }
+    if output_format == "json":
+        raise ToolError(json.dumps(failed))
+    raise ToolError(text)
 
 
 def _is_not_found(error: ToolError) -> bool:

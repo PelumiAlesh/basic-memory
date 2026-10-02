@@ -648,10 +648,18 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
     brief_include_profile: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Include the profile note excerpt in get_brief when that note exists. "
-            "Env: BASIC_MEMORY_BRIEF_INCLUDE_PROFILE"
+            "Off unless the owner opts in. Env: BASIC_MEMORY_BRIEF_INCLUDE_PROFILE"
+        ),
+    )
+    brief_inject_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, Cursor sessionStart and Claude Code UserPromptSubmit hooks "
+            "may insert the memory brief into the host prompt. Off unless "
+            "`bm setup --brief` is used. Env: BASIC_MEMORY_BRIEF_INJECT_ENABLED"
         ),
     )
     brief_state_note: str = Field(

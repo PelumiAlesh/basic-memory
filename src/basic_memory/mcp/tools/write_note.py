@@ -14,8 +14,8 @@ from pydantic import AliasChoices, BeforeValidator, Field
 from basic_memory.config import ConfigManager
 from basic_memory.file_utils import remove_frontmatter
 from basic_memory.mcp.project_context import get_project_client, add_project_metadata
-from basic_memory.mcp.write_verification import verify_note_write
-from basic_memory.shared_memory.write_safety import snapshot_local_note
+from basic_memory.mcp.write_verification import raise_if_verification_failed, verify_note_write
+from basic_memory.shared_memory.write_safety import assert_snapshot_current, snapshot_local_note
 from basic_memory.mcp.server import mcp
 from fastmcp import Context
 from fastmcp.exceptions import ToolError
@@ -485,7 +485,19 @@ async def write_note(
             # Why: `.bm-history/` is the local undo copy, independent of git (#10).
             # Outcome: the write aborts when the snapshot fails.
             if effective_overwrite:
-                snapshot_local_note(active_project.home, entity.file_path)
+                snapshot = snapshot_local_note(active_project.home, entity.file_path)
+                # The write API compares expected_checksum to the accepted db_checksum.
+                # Send the snapshot checksum only when those bytes are that revision.
+                # A drifted file keeps an unconditional overwrite; a matching one
+                # aborts if another write lands first. Either way, a file that
+                # changes after the copy is refused before the API call.
+                if snapshot is not None and expected_checksum is None:
+                    matched = await _accepted_checksum_matching_file(
+                        knowledge_client, entity.file_path, snapshot.checksum
+                    )
+                    if matched is not None:
+                        expected_checksum = matched
+                assert_snapshot_current(active_project.home, snapshot)
 
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
@@ -685,12 +697,36 @@ async def write_note(
                 }
                 if verification is not None:
                     payload["verification"] = verification.as_dict()
-                    if verification.status == "failed":
-                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                raise_if_verification_failed(
+                    verification,
+                    output_format=output_format,
+                    payload=payload,
+                    text="\n".join(summary),
+                )
                 return payload
 
             summary_result = "\n".join(summary)
+            raise_if_verification_failed(
+                verification,
+                output_format=output_format,
+                payload={},
+                text=summary_result,
+            )
             return add_project_metadata(summary_result, active_project.name)
+
+
+async def _accepted_checksum_matching_file(
+    knowledge_client: Any, file_path: str, file_checksum: str
+) -> str | None:
+    """Return the file checksum when it is the accepted revision, else None."""
+    try:
+        entity_id = await knowledge_client.resolve_entity(file_path, strict=True)
+        existing = await knowledge_client.get_entity(entity_id)
+    except ToolError:
+        return None
+    if existing.db_checksum == file_checksum:
+        return file_checksum
+    return None
 
 
 def _format_revision_conflict(

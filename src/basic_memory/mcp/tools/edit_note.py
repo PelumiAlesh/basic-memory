@@ -22,8 +22,12 @@ from basic_memory.file_utils import (
     remove_frontmatter,
 )
 from basic_memory.ignore_utils import IGNORED_PATH_REJECTION_DETAIL
-from basic_memory.mcp.write_verification import verify_note_edit, verify_note_write
-from basic_memory.shared_memory.write_safety import snapshot_local_note
+from basic_memory.mcp.write_verification import (
+    raise_if_verification_failed,
+    verify_note_edit,
+    verify_note_write,
+)
+from basic_memory.shared_memory.write_safety import assert_snapshot_current, snapshot_local_note
 from basic_memory.mcp.project_context import (
     UnresolvedProjectRouteError,
     _workspace_identifier_discovery_available,
@@ -791,7 +795,11 @@ async def edit_note(
                 if not file_created:
                     before_entity = await knowledge_client.get_entity(entity_id)
                     before_markdown = before_entity.content
-                    snapshot_local_note(active_project.home, before_entity.file_path)
+                    snapshot = snapshot_local_note(active_project.home, before_entity.file_path)
+                    base_checksum = None
+                    if snapshot is not None and snapshot.checksum == before_entity.db_checksum:
+                        base_checksum = snapshot.checksum
+                    assert_snapshot_current(active_project.home, snapshot)
                     # Prepare the edit request data
                     edit_data = {
                         "operation": operation,
@@ -811,7 +819,12 @@ async def edit_note(
                         edit_data["metadata"] = metadata
 
                     # Call the PATCH endpoint
-                    result = await knowledge_client.patch_entity(entity_id, edit_data)
+                    if base_checksum is None:
+                        result = await knowledge_client.patch_entity(entity_id, edit_data)
+                    else:
+                        result = await knowledge_client.patch_entity(
+                            entity_id, edit_data, base_checksum=base_checksum
+                        )
 
                 # --- Format response ---
                 # result is always set: either by create_entity (auto-create) or patch_entity (edit)
@@ -932,13 +945,25 @@ async def edit_note(
                     }
                     if verification is not None:
                         payload["verification"] = verification.as_dict()
-                        if verification.status == "failed":
-                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    raise_if_verification_failed(
+                        verification,
+                        output_format=output_format,
+                        payload=payload,
+                        text="\n".join(summary),
+                    )
                     return payload
 
                 summary_result = "\n".join(summary)
+                raise_if_verification_failed(
+                    verification,
+                    output_format=output_format,
+                    payload={},
+                    text=summary_result,
+                )
                 return add_project_metadata(summary_result, active_project.name)
 
+            except ToolError:
+                raise
             except Exception as e:
                 logger.error(f"Error editing note: {e}")
                 if isinstance(e, UnresolvedProjectRouteError):

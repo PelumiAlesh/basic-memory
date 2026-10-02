@@ -762,6 +762,8 @@ def test_fork_build_never_checks_or_installs(monkeypatch, tmp_path, force, check
     assert result.updated is False
     assert manager.save_calls == 0
     assert "git+https://github.com/PelumiAlesh/basic-memory" in (result.message or "")
+    assert "@cursor/v2-stack-integrated-7b2f" in (result.message or "")
+    assert "+pelumi" in (result.message or "")
 
 
 def test_fork_build_periodic_check_prints_nothing(monkeypatch, tmp_path):

@@ -72,15 +72,18 @@ def verify_full_write(expected_content: str, stored_markdown: str | None) -> Wri
             checks["index"] = "ok"
             return WriteVerification("verified", checks)
         checks["index"] = "mismatch"
-        return WriteVerification(
-            "failed", checks, "stored content does not contain what was written"
-        )
+        return WriteVerification("failed", checks, "stored content does not equal what was written")
+    # A full write replaces the body. Containment would accept an old note that
+    # happens to include the new text once (a leftover financial note, for example).
+    if expected == actual:
+        checks["index"] = "ok"
+        return WriteVerification("verified", checks)
     if expected in actual:
         if len(expected) >= DUPLICATE_MIN_CHARS and count_occurrences(actual, expected) > 1:
             checks["index"] = "duplicated"
             return WriteVerification("failed", checks, "content appears more than once")
-        checks["index"] = "ok"
-        return WriteVerification("verified", checks)
+        checks["index"] = "mismatch"
+        return WriteVerification("failed", checks, "stored content does not equal what was written")
     if actual and expected.startswith(actual):
         checks["index"] = "truncated"
         return WriteVerification(

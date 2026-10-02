@@ -21,8 +21,6 @@ from basic_memory.mcp.tools import (
     write_note,
 )
 from basic_memory.schemas.response import (
-    DirectoryDeleteError,
-    DirectoryDeleteResult,
     DirectoryMoveError,
     DirectoryMoveResult,
 )
@@ -316,10 +314,14 @@ async def test_delete_note_text_and_json_modes(app, test_project):
 async def test_delete_directory_json_mode_returns_structured_error_on_failure(
     app, test_project, monkeypatch
 ):
-    async def mock_delete_directory(self, directory: str):
-        raise RuntimeError("simulated directory delete failure")
+    note = Path(test_project.path) / "mode-tests" / "a.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("alpha\n", encoding="utf-8")
 
-    monkeypatch.setattr(KnowledgeClient, "delete_directory", mock_delete_directory)
+    async def mock_resolve(self, identifier: str, *, strict: bool = False) -> str:
+        raise ToolError("simulated directory delete failure")
+
+    monkeypatch.setattr(KnowledgeClient, "resolve_entity", mock_resolve)
 
     # A failed delete is a tool error; in JSON mode its message is the structured payload.
     with pytest.raises(ToolError) as exc_info:
@@ -333,28 +335,30 @@ async def test_delete_directory_json_mode_returns_structured_error_on_failure(
     assert json_delete["deleted"] is False
     assert json_delete["is_directory"] is True
     assert json_delete["identifier"] == "mode-tests"
-    assert "simulated directory delete failure" in json_delete["error"]
+    assert "simulated directory delete failure" in json_delete["errors"][0]["error"]
 
 
 @pytest.mark.asyncio
 async def test_delete_directory_json_mode_reports_partial_delete_failure(
     app, test_project, monkeypatch
 ):
-    async def mock_delete_directory(self, directory: str):
-        return DirectoryDeleteResult(
-            total_files=2,
-            successful_deletes=1,
-            failed_deletes=1,
-            deleted_files=["mode-tests/deleted.md"],
-            errors=[
-                DirectoryDeleteError(
-                    path="mode-tests/locked.md",
-                    error="permission denied",
-                )
-            ],
-        )
+    root = Path(test_project.path) / "mode-tests"
+    root.mkdir(parents=True)
+    (root / "deleted.md").write_text("gone\n", encoding="utf-8")
+    (root / "locked.md").write_text("stay\n", encoding="utf-8")
 
-    monkeypatch.setattr(KnowledgeClient, "delete_directory", mock_delete_directory)
+    async def mock_resolve(self, identifier: str, *, strict: bool = False) -> str:
+        return identifier
+
+    async def mock_delete(self, entity_id: str):
+        from basic_memory.schemas.response import DeleteEntitiesResponse
+
+        if entity_id.endswith("locked.md"):
+            raise ToolError("permission denied")
+        return DeleteEntitiesResponse(deleted=True)
+
+    monkeypatch.setattr(KnowledgeClient, "resolve_entity", mock_resolve)
+    monkeypatch.setattr(KnowledgeClient, "delete_entity", mock_delete)
 
     # A partial delete is a tool error; its payload still lists what was deleted.
     with pytest.raises(ToolError) as exc_info:
@@ -377,17 +381,23 @@ async def test_partial_directory_delete_text_mode_is_an_incomplete_error(
     app, test_project, monkeypatch
 ):
     """A partial delete is not "Deleted Successfully": it is an error that lists what went."""
+    root = Path(test_project.path) / "mode-tests"
+    root.mkdir(parents=True)
+    (root / "deleted.md").write_text("gone\n", encoding="utf-8")
+    (root / "locked.md").write_text("stay\n", encoding="utf-8")
 
-    async def mock_delete_directory(self, directory: str):
-        return DirectoryDeleteResult(
-            total_files=2,
-            successful_deletes=1,
-            failed_deletes=1,
-            deleted_files=["mode-tests/deleted.md"],
-            errors=[DirectoryDeleteError(path="mode-tests/locked.md", error="permission denied")],
-        )
+    async def mock_resolve(self, identifier: str, *, strict: bool = False) -> str:
+        return identifier
 
-    monkeypatch.setattr(KnowledgeClient, "delete_directory", mock_delete_directory)
+    async def mock_delete(self, entity_id: str):
+        from basic_memory.schemas.response import DeleteEntitiesResponse
+
+        if entity_id.endswith("locked.md"):
+            raise ToolError("permission denied")
+        return DeleteEntitiesResponse(deleted=True)
+
+    monkeypatch.setattr(KnowledgeClient, "resolve_entity", mock_resolve)
+    monkeypatch.setattr(KnowledgeClient, "delete_entity", mock_delete)
 
     with pytest.raises(ToolError) as exc_info:
         await delete_note(identifier="mode-tests", is_directory=True, project=test_project.name)

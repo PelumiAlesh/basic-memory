@@ -7,7 +7,11 @@ import pytest
 from fastmcp.exceptions import ToolError
 
 from basic_memory.shared_memory.file_history import HISTORY_DIR
-from basic_memory.shared_memory.write_safety import snapshot_local_directory
+from basic_memory.shared_memory.file_history import snapshot_before_destructive_write
+from basic_memory.shared_memory.write_safety import (
+    assert_snapshot_current,
+    snapshot_local_directory,
+)
 
 
 def test_directory_snapshot_copies_every_regular_child(tmp_path: Path) -> None:
@@ -24,8 +28,9 @@ def test_directory_snapshot_copies_every_regular_child(tmp_path: Path) -> None:
     (bundle / HISTORY_DIR / "old.md").write_text("old", encoding="utf-8")
     os.mkfifo(bundle / "pipe")
 
-    snapshot_local_directory(tmp_path, "bundle")
+    snapshots = snapshot_local_directory(tmp_path, "bundle")
 
+    assert {item.relative_path for item in snapshots} == {"bundle/a.md", "bundle/nested/b.md"}
     texts = {
         path.read_text(encoding="utf-8")
         for path in (tmp_path / HISTORY_DIR).iterdir()
@@ -81,3 +86,16 @@ def test_directory_snapshot_noop_escape_and_symlink(tmp_path: Path) -> None:
         snapshot_local_directory(tmp_path, "linked-dir")
     with pytest.raises(ToolError, match="escapes"):
         snapshot_local_directory(tmp_path, "../outside")
+
+
+def test_snapshot_checksum_aborts_when_the_file_changes(tmp_path: Path) -> None:
+    note = tmp_path / "note.md"
+    note.write_text("before\n", encoding="utf-8")
+    snapshot = snapshot_before_destructive_write(tmp_path, "note.md")
+    assert snapshot is not None
+    assert_snapshot_current(tmp_path, snapshot)
+
+    note.write_text("after\n", encoding="utf-8")
+    with pytest.raises(ToolError, match="changed after history snapshot"):
+        assert_snapshot_current(tmp_path, snapshot)
+    assert note.read_text(encoding="utf-8") == "after\n"

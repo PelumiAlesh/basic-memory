@@ -8,8 +8,14 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.mcp.write_verification import verify_note_delete
-from basic_memory.shared_memory.write_safety import snapshot_local_directory, snapshot_local_note
+from basic_memory.mcp.write_verification import raise_if_verification_failed, verify_note_delete
+from basic_memory.schemas.response import DirectoryDeleteError, DirectoryDeleteResult
+from basic_memory.shared_memory.file_history import FileSnapshot
+from basic_memory.shared_memory.write_safety import (
+    assert_snapshot_current,
+    snapshot_local_directory,
+    snapshot_local_note,
+)
 from basic_memory.mcp.project_context import (
     detect_project_from_memory_url_prefix,
     get_project_client,
@@ -100,6 +106,47 @@ def _format_delete_error_response(project: str, error_message: str, identifier: 
         `search_notes(query="{identifier}", project="{project}")` before retrying. If the
         operation keeps failing, contact support@basicmemory.com.
         """).strip()
+
+
+def _local_project_home(home: object) -> bool:
+    from pathlib import Path
+
+    return isinstance(home, (str, Path)) and Path(home).is_dir()
+
+
+async def _delete_snapshotted_paths(
+    knowledge_client: Any,
+    project_home: object,
+    snapshots: tuple[FileSnapshot, ...],
+) -> DirectoryDeleteResult:
+    """Delete the entities whose files were copied, and no others.
+
+    A path whose bytes changed after the copy is left in place. A path that was
+    not in the snapshot is not deleted, including a file created during the walk.
+    """
+    deleted_files: list[str] = []
+    errors: list[DirectoryDeleteError] = []
+    for snapshot in snapshots:
+        try:
+            assert_snapshot_current(project_home, snapshot)
+            entity_id = await knowledge_client.resolve_entity(snapshot.relative_path, strict=True)
+            outcome = await knowledge_client.delete_entity(entity_id)
+        except ToolError as error:
+            errors.append(DirectoryDeleteError(path=snapshot.relative_path, error=str(error)))
+            continue
+        if outcome.deleted:
+            deleted_files.append(snapshot.relative_path)
+        else:
+            errors.append(
+                DirectoryDeleteError(path=snapshot.relative_path, error="Delete returned False")
+            )
+    return DirectoryDeleteResult(
+        total_files=len(snapshots),
+        successful_deletes=len(deleted_files),
+        failed_deletes=len(errors),
+        deleted_files=deleted_files,
+        errors=errors,
+    )
 
 
 def _raise_delete_failure(output_format: str, payload: dict[str, Any], text: str) -> NoReturn:
@@ -287,9 +334,16 @@ async def delete_note(
             # Snapshot every child before the API delete. This stays outside the
             # error formatter below: a failed copy raises ToolError and must not
             # become a message returned after the files are already gone.
-            snapshot_local_directory(active_project.home, directory_identifier)
+            # A local project then deletes only those copied paths. delete_directory
+            # lists again, so a file created in the gap would be removed with no copy.
+            snapshots = snapshot_local_directory(active_project.home, directory_identifier)
             try:
-                result = await knowledge_client.delete_directory(directory_identifier)
+                if _local_project_home(active_project.home):
+                    result = await _delete_snapshotted_paths(
+                        knowledge_client, active_project.home, snapshots
+                    )
+                else:
+                    result = await knowledge_client.delete_directory(directory_identifier)
             except Exception as e:  # pragma: no cover
                 logger.error(f"Directory delete failed for '{identifier}': {e}")
                 _raise_delete_failure(
@@ -439,7 +493,8 @@ Total files: 0.
             if note_file_path is None:
                 entity_for_path = await knowledge_client.get_entity(entity_id)
                 note_file_path = entity_for_path.file_path
-            snapshot_local_note(active_project.home, note_file_path)
+            snapshot = snapshot_local_note(active_project.home, note_file_path)
+            assert_snapshot_current(active_project.home, snapshot)
 
             # Call the DELETE endpoint
             result = await knowledge_client.delete_entity(entity_id)
@@ -466,9 +521,34 @@ Total files: 0.
                     }
                     if verification is not None:
                         payload["verification"] = verification.as_dict()
-                        if verification.status == "failed":
-                            payload["error"] = "WRITE_VERIFICATION_FAILED"
+                    failure_text = (
+                        f"# Delete failed verification\n\n{verification.as_text()}"
+                        if verification is not None
+                        else ""
+                    )
+                    raise_if_verification_failed(
+                        verification,
+                        output_format=output_format,
+                        payload=payload,
+                        text=failure_text,
+                    )
                     return payload
+                text_failure = (
+                    f"# Delete failed verification\n\n{verification.as_text()}"
+                    if verification is not None
+                    else ""
+                )
+                raise_if_verification_failed(
+                    verification,
+                    output_format=output_format,
+                    payload={
+                        "deleted": True,
+                        "title": note_title,
+                        "permalink": note_permalink,
+                        "file_path": note_file_path,
+                    },
+                    text=text_failure,
+                )
                 return True
             else:
                 logger.warning(  # pragma: no cover
@@ -483,6 +563,8 @@ Total files: 0.
                     }
                 return False  # pragma: no cover
 
+        except ToolError:
+            raise
         except Exception as e:  # pragma: no cover
             logger.error(f"Delete failed for '{identifier}': {e}, project: {active_project.name}")
             _raise_delete_failure(

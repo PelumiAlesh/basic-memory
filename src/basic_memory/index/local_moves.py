@@ -21,6 +21,10 @@ from basic_memory.file_utils import (
     parse_frontmatter,
     remove_frontmatter,
 )
+from basic_memory.shared_memory.provenance import (
+    prepend_frontmatter_block,
+    write_frontmatter_lines,
+)
 from basic_memory.markdown import EntityMarkdown
 from basic_memory.indexing.project_index_maintenance import (
     ProjectIndexMaintenanceRunner,
@@ -83,6 +87,26 @@ def merged_frontmatter_markdown(content: str, updates: Mapping[str, object]) -> 
     fresh frontmatter block — so planned bytes match what a direct frontmatter
     rewrite would have produced.
     """
+    string_updates = (
+        {str(key): value for key, value in updates.items() if isinstance(value, str)}
+        if updates and all(isinstance(value, str) for value in updates.values())
+        else None
+    )
+    # String updates, including permalinks, edit lines in place. A full YAML dump
+    # restyles timestamps, booleans, and lists, and strip() drops trailing blanks.
+    if string_updates is not None:
+        if has_frontmatter(content):
+            try:
+                parse_frontmatter(content)
+            except ParseError as error:
+                logger.warning(
+                    "Treating file with malformed frontmatter as plain markdown",
+                    error=str(error),
+                )
+                return prepend_frontmatter_block(content, string_updates)
+            return write_frontmatter_lines(content, string_updates)
+        return prepend_frontmatter_block(content, string_updates)
+
     current_frontmatter: dict[str, object] = {}
     body = content
     if has_frontmatter(content):

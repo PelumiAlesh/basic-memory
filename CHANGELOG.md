@@ -44,24 +44,29 @@
   briefing: optional profile and current-state excerpts (omitted when missing), open
   decision titles, inbox markdown count, and `brief_refresh_hours` throttling (default
   6) via `<project>/.basic-memory/brief-delivery.json`. `get_brief(conversation_id=...)`
-  records that id. `brief_include_profile` (default true) gates the profile excerpt.
-  Setup hooks call that same briefing.
+  records that id. `brief_include_profile` (default false) gates the profile excerpt.
+  Host hooks inject that briefing only after `bm setup --brief` (`brief_inject_enabled`,
+  default false). With the flag off they inject nothing.
 - `bm setup` writes Claude Code's user MCP server to `~/.claude.json`, keeps hooks in
   `~/.claude/settings.json`, reuses tokens across runs, and `--uninstall` restores or
   deletes the files it touched. Every MCP entry and the launchd agent get
-  `BASIC_MEMORY_NO_PROMOS=1`. Setup forces Logfire export off and sets
-  `cloud_promo_opt_out`. Cursor `sessionStart` can brief a new chat only. Setup also
-  writes `~/.cursor/rules/basic-memory-get-brief.mdc` and prints that text; following
-  it is not guaranteed. Claude Code `UserPromptSubmit` emits
-  `hookSpecificOutput.additionalContext`.
+  `BASIC_MEMORY_NO_PROMOS=1` and `BASIC_MEMORY_FORCE_LOCAL=1`. Setup refuses to
+  continue while a cloud API key, OAuth tokens, a default workspace, or a cloud-mode
+  project is configured. Setup forces Logfire export off and sets
+  `cloud_promo_opt_out`. Cursor `sessionStart` and Claude Code `UserPromptSubmit`
+  are installed only with `--brief`. Setup also writes
+  `~/.cursor/rules/basic-memory-get-brief.mdc` and prints that text; following
+  it is not guaranteed.
 - Directory `delete_note` copies every regular child file into `.bm-history/` before
-  deleting, and aborts if any copy fails.
+  deleting, and aborts if any copy fails. A local delete then removes only those
+  copied paths, and a file whose bytes changed after the copy is left in place.
+  `.bm-history` is ignored by default. A symlinked `.bm-history` is refused.
 - Session capture stays off until `bm setup --session-capture`. Stop hooks are
   registered only then, and a status-only stop writes no inbox note. Captured text
   is local and clipped.
 
 - Fork builds identify themselves: `basic-memory --version` and the package metadata
-  both report `0.23.2+pelumi.2` (a PEP 440 local label) when installed from
+  both report `0.23.2+pelumi.3` (a PEP 440 local label) when installed from
   `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The
   periodic update check, the stdio MCP background update, and `bm update` no longer
   replace a fork build with the upstream release; `bm update --force` does so on purpose.

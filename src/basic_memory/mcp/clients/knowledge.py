@@ -230,6 +230,8 @@ class KnowledgeClient:
         self,
         entity_id: str,
         patch_data: dict[str, Any],
+        *,
+        base_checksum: str | None = None,
     ) -> EntityResponseV2:
         """Partially update an entity.
 
@@ -245,7 +247,13 @@ class KnowledgeClient:
             ToolError: If the request fails
         """
         from basic_memory.mcp.tools.utils import call_patch
+        from basic_memory.runtime.note_content_responses import NOTE_CONTENT_BASE_CHECKSUM_HEADER
 
+        headers = (
+            {NOTE_CONTENT_BASE_CHECKSUM_HEADER: base_checksum}
+            if base_checksum is not None
+            else None
+        )
         with logfire.span(
             "mcp.client.knowledge.patch_entity",
             client_name="knowledge",
@@ -255,6 +263,7 @@ class KnowledgeClient:
                 self.http_client,
                 f"{self._base_path}/entities/{entity_id}",
                 json=patch_data,
+                headers=headers,
                 client_name="knowledge",
                 operation="patch_entity",
                 path_template="/v2/projects/{project_id}/knowledge/entities/{entity_id}",

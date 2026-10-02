@@ -1069,6 +1069,14 @@ async def edit_entity_by_id(
     relation_resolution_scheduler: RelationResolutionSchedulerDep,
     app_config: AppConfigDep,
     entity_id: str = Path(..., description="Entity external ID (UUID)"),
+    base_checksum: Annotated[
+        str | None,
+        Header(
+            alias=NOTE_CONTENT_BASE_CHECKSUM_HEADER,
+            description="Optional optimistic-concurrency precondition: the "
+            "db_checksum the caller snapshotted. A stale value rejects the edit.",
+        ),
+    ] = None,
 ) -> EntityResponseV2:
     """Edit an existing entity by external ID using operations like append, prepend, etc.
 
@@ -1101,6 +1109,7 @@ async def edit_entity_by_id(
                 data=data,
                 user_profile_id=None,
                 source="api",
+                base_checksum=base_checksum,
             )
         except NoteContentMutationServiceError as error:
             raise HTTPException(status_code=error.status_code, detail=error.detail) from error

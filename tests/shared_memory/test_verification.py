@@ -50,6 +50,13 @@ def test_empty_write_matches_only_an_empty_body() -> None:
     assert leftover.checks["index"] == "mismatch"
 
 
+def test_full_write_rejects_a_body_that_only_contains_the_new_text() -> None:
+    leftover = "---\ntitle: Plan\n---\n\nAn old note that mentions sparrow once.\n"
+    result = verify_full_write("sparrow", leftover)
+    assert result.status == "failed"
+    assert result.checks["index"] == "mismatch"
+
+
 def test_full_write_mismatch_is_named() -> None:
     result = verify_full_write(BODY, "---\ntitle: Plan\n---\n\nSomething else entirely.")
     assert result.status == "failed"

@@ -149,9 +149,8 @@ async def build_brief(
             BriefSection("Inbox", f"{inbox_count} note(s) in {config.brief_inbox_folder}/")
         )
 
-        # Trigger: brief_include_profile is on (the default).
-        # Why: the profile excerpt is useful and was always included when the note
-        # existed. The flag lets an owner leave it out without changing that default.
+        # Trigger: brief_include_profile is on.
+        # Why: the profile excerpt is personal. It stays out unless the owner opts in.
         # Outcome: the Profile section is omitted when the flag is false.
         if config.brief_include_profile:
             profile = await _optional_excerpt(knowledge, config.brief_profile_note)
@@ -198,7 +197,7 @@ async def get_brief(
     `project/state`), decision note titles from the last `brief_decision_days`,
     a count of markdown files in `brief_inbox_folder` (default `inbox/`), and
     the profile note excerpt when present (`brief_profile_note`, default
-    `me/profile`) if `brief_include_profile` is true (the default). Missing
+    `me/profile`) if `brief_include_profile` is true (off by default). Missing
     profile or state notes are omitted with no error text.
     `token_budget` overrides `brief_token_budget` (default 1500). Roughly four
     characters per token; later sections are dropped first.

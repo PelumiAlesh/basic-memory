@@ -48,14 +48,19 @@ async def test_write_note_flags_truncated_readback(client, test_project, monkeyp
         return entity.model_copy(update={"content": cut})
 
     monkeypatch.setattr(clients_module.KnowledgeClient, "get_entity", truncated)
-    result = await write_note(
-        project=test_project.name,
-        title="Truncated Plan",
-        directory="plans",
-        content="# Truncated Plan\n\nA body long enough that cutting twenty characters shows.",
-        output_format="json",
-    )
-    assert isinstance(result, dict)
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError) as exc_info:
+        await write_note(
+            project=test_project.name,
+            title="Truncated Plan",
+            directory="plans",
+            content="# Truncated Plan\n\nA body long enough that cutting twenty characters shows.",
+            output_format="json",
+        )
+    import json
+
+    result = json.loads(str(exc_info.value))
     assert result["verification"]["status"] == "failed"
     assert result["verification"]["checks"]["index"] == "truncated"
     assert result["error"] == "WRITE_VERIFICATION_FAILED"
@@ -92,14 +97,19 @@ async def test_edit_note_append_verified_and_duplicate_flagged(client, test_proj
         return entity
 
     monkeypatch.setattr(clients_module.KnowledgeClient, "get_entity", doubled_after)
-    dup = await edit_note(
-        project=test_project.name,
-        identifier="plans/edit-verified",
-        operation="append",
-        content="\n## Follow-up\n\nSecond decision that gets duplicated by a bug.",
-        output_format="json",
-    )
-    assert isinstance(dup, dict)
+    from fastmcp.exceptions import ToolError
+
+    with pytest.raises(ToolError) as exc_info:
+        await edit_note(
+            project=test_project.name,
+            identifier="plans/edit-verified",
+            operation="append",
+            content="\n## Follow-up\n\nSecond decision that gets duplicated by a bug.",
+            output_format="json",
+        )
+    import json
+
+    dup = json.loads(str(exc_info.value))
     assert dup["verification"]["status"] == "failed"
     assert dup["verification"]["checks"]["index"] == "duplicated"
 

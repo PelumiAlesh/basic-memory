@@ -30,6 +30,8 @@ def launchd_plist_content(binary: Path, port: int, label: str, log_dir: Path) ->
   <dict>
     <key>BASIC_MEMORY_NO_PROMOS</key>
     <string>1</string>
+    <key>BASIC_MEMORY_FORCE_LOCAL</key>
+    <string>1</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>

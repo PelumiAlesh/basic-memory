@@ -41,7 +41,9 @@ def _command(launcher: str, verb: str) -> str:
     return f"{launcher} hook {verb}"
 
 
-def cursor_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, list[dict[str, Any]]]:
+def cursor_hook_entries(
+    launcher: str, *, session_capture: bool, brief_inject: bool = False
+) -> dict[str, list[dict[str, Any]]]:
     """Cursor hooks.json schema (version 1): a flat list of ``{command, timeout}``.
 
     ``beforeSubmitPrompt`` is not installed. Its output cannot add context, and the
@@ -55,9 +57,14 @@ def cursor_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, li
             "timeout": timeout,
         }
 
-    entries = {
-        "sessionStart": [entry("fork-cursor-session-start", 25)],
-    }
+    entries: dict[str, list[dict[str, Any]]] = {}
+    # Trigger: the owner passed `bm setup --brief`.
+    # Why: sessionStart prints note excerpts into the host prompt, which then
+    # leaves the machine. That is off unless explicitly requested.
+    # Outcome: a setup without --brief installs no brief hook, and a re-run
+    # removes one that an earlier setup installed.
+    if brief_inject:
+        entries["sessionStart"] = [entry("fork-cursor-session-start", 25)]
     # Trigger: the user opted into session capture.
     # Why: a Stop hook that is always installed still runs when capture is off.
     # Outcome: the stop command is registered only while capture is on.
@@ -66,7 +73,9 @@ def cursor_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, li
     return entries
 
 
-def claude_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, list[dict[str, Any]]]:
+def claude_hook_entries(
+    launcher: str, *, session_capture: bool, brief_inject: bool = False
+) -> dict[str, list[dict[str, Any]]]:
     """Claude Code settings shape: event -> matcher groups -> command hooks."""
 
     def group(verb: str, timeout: int) -> dict[str, Any]:
@@ -80,21 +89,25 @@ def claude_hook_entries(launcher: str, *, session_capture: bool) -> dict[str, li
             ]
         }
 
-    entries = {
-        "UserPromptSubmit": [group("fork-claude-user-prompt", 25)],
-    }
+    entries: dict[str, list[dict[str, Any]]] = {}
+    if brief_inject:
+        entries["UserPromptSubmit"] = [group("fork-claude-user-prompt", 25)]
     if session_capture:
         entries["Stop"] = [group("fork-claude-stop", 30)]
     return entries
 
 
-def install_cursor_hooks(launcher: str, *, session_capture: bool) -> None:
+def install_cursor_hooks(
+    launcher: str, *, session_capture: bool, brief_inject: bool = False
+) -> None:
     path = cursor_hooks_path()
     data = _load_hook_config(path) if path.exists() else {"version": 1, "hooks": {}}
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError(f"{path}: hooks must be an object")
-    desired = cursor_hook_entries(launcher, session_capture=session_capture)
+    desired = cursor_hook_entries(
+        launcher, session_capture=session_capture, brief_inject=brief_inject
+    )
     # Re-runs replace our events. A capture stop hook from an earlier run is removed
     # when this run has capture off, without touching anyone else's commands.
     for event in ("sessionStart", "beforeSubmitPrompt", "stop"):
@@ -141,13 +154,17 @@ def remove_cursor_hooks() -> None:
         _write_hook_config(path, data)
 
 
-def install_claude_hooks(launcher: str, *, session_capture: bool) -> None:
+def install_claude_hooks(
+    launcher: str, *, session_capture: bool, brief_inject: bool = False
+) -> None:
     path = claude_code_settings_path()
     data = _load_hook_config(path)
     hooks = data.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise ValueError(f"{path}: hooks must be an object")
-    desired = claude_hook_entries(launcher, session_capture=session_capture)
+    desired = claude_hook_entries(
+        launcher, session_capture=session_capture, brief_inject=brief_inject
+    )
     for event in ("UserPromptSubmit", "Stop"):
         existing = hooks.get(event)
         if existing is None:

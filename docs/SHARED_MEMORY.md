@@ -7,9 +7,13 @@ jobs.
 
 Fork features write only on this machine: the vault, `.bm-history/`, `.bm-logs/`, and
 `~/.basic-memory/`. They do not open a connection to upload note bodies. `bm setup`
-puts `BASIC_MEMORY_NO_PROMOS=1` on every MCP server entry it writes and on the
-launchd agent, sets `logfire_enabled` and `logfire_send_to_logfire` to false, and
-sets `cloud_promo_opt_out` so the CLI promo panel does not call Umami.
+puts `BASIC_MEMORY_NO_PROMOS=1` and `BASIC_MEMORY_FORCE_LOCAL=1` on every MCP
+server entry it writes and on the launchd agent, sets `logfire_enabled` and
+`logfire_send_to_logfire` to false, and sets `cloud_promo_opt_out` so the CLI
+promo panel does not call Umami. `analytics.track()` also returns before any
+request when that flag is set or a fork setup manifest exists. Setup refuses
+to run while a cloud API key, saved OAuth tokens, a default workspace, or any
+cloud-mode project is configured.
 `--uninstall` restores the previous config and those MCP files, and removes the
 launchd agent. Upstream `basic-memory cloud push`, `cloud sync`, `cloud bisync`,
 and `bm cloud login` still talk to the network if you run them. A terminal `bm`
@@ -25,12 +29,12 @@ setting that controls the feature and its default.
 ## Fork version and updates
 
 Builds from this repository carry a PEP 440 local version label, for example
-`0.23.2+pelumi.2`. Both `basic-memory --version` and the installed package metadata report it:
+`0.23.2+pelumi.3`. Both `basic-memory --version` and the installed package metadata report it:
 
 ```bash
 uv tool install --prerelease=allow --reinstall \
   "basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@cursor/v2-stack-integrated-7b2f"
-basic-memory --version        # Basic Memory version: 0.23.2+pelumi.2
+basic-memory --version        # Basic Memory version: 0.23.2+pelumi.3
 ```
 
 The version comes from `__version__` in `src/basic_memory/__init__.py` (hatch reads it; see
@@ -173,9 +177,12 @@ Settings (env vars use the `BASIC_MEMORY_` prefix):
 - `brief_state_note` (default `project/state`) — included when the note exists
 - `brief_profile_note` (default `me/profile`) — optional excerpt when the note exists;
   missing notes are omitted with no error text
-- `brief_include_profile` (default `true`) — when false, `get_brief` omits that excerpt
-  even if the note exists. The default leaves the excerpt in, which is the previous
-  behavior
+- `brief_include_profile` (default `false`) — when false, `get_brief` omits that excerpt
+  even if the note exists. Turn it on to include the profile
+- `brief_inject_enabled` (default `false`; `bm setup --brief`) — when false, Cursor
+  `sessionStart` and Claude Code `UserPromptSubmit` inject nothing. Titles are not
+  injected either: a title can be as sensitive as the body. Calling `get_brief`
+  still returns the briefing
 - `brief_inbox_folder` (default `inbox`) — top-level markdown files counted in the brief
 - `brief_decision_days` (default `14`) — decision note titles listed by search
 - `brief_token_budget` (default `1500`) — rough character budget (`len / 4`); later
@@ -186,7 +193,9 @@ Settings (env vars use the `BASIC_MEMORY_` prefix):
 
 Delivery timestamps are stored in `<project>/.basic-memory/brief-delivery.json`.
 
-`bm setup` wires delivery:
+`bm setup --brief` wires delivery. Without that flag the hook commands are not
+installed, and a later setup without `--brief` removes them. When the flag is off
+at runtime, Cursor prints `{}` and Claude Code prints nothing.
 
 - Claude Code `UserPromptSubmit` prints JSON `hookSpecificOutput.additionalContext`
   (event name `UserPromptSubmit`). That runs on every prompt, including a resumed
@@ -200,16 +209,14 @@ Delivery timestamps are stored in `<project>/.basic-memory/brief-delivery.json`.
   so setup does not register it.
 - In a resumed Cursor chat the brief is not injected by a hook. Setup writes a
   machine-local rule file at `~/.cursor/rules/basic-memory-get-brief.mdc` and prints
-  the same text. The rules reference
-  ([cursor.com/docs/rules](https://cursor.com/docs/rules)) defines global user rules
-  only in Customize → Rules (account-synced, no file API). The help page
+  the same text. With injection off, the rule says not to read project notes unless
+  you ask. With `--brief`, the rule asks the model to call `get_brief`. The rules
+  reference ([cursor.com/docs/rules](https://cursor.com/docs/rules)) defines global
+  user rules only in Customize → Rules (account-synced, no file API). The help page
   ([cursor.com/help/customization/rules](https://cursor.com/help/customization/rules))
   also documents user rule files in `~/.cursor/rules` that stay on the machine.
-  The rule asks the model to call `get_brief` at the start of a turn when it has
-  not called `get_brief` in that conversation within the last 6 hours, and to pass
-  `conversation_id` when it has one. Following the rule is not guaranteed.
-  `--uninstall` removes or restores the file. A rule pasted into Customize → Rules
-  stays until you delete it there.
+  Following the rule is not guaranteed. `--uninstall` removes or restores the file.
+  A rule pasted into Customize → Rules stays until you delete it there.
 
 See [FORK_SETUP_CURSOR_HOOKS.md](FORK_SETUP_CURSOR_HOOKS.md).
 
@@ -271,10 +278,21 @@ twice does not append twice. Nothing in this feature is uploaded.
 ## Local history
 
 Before `write_note`, `edit_note`, `move_note`, and a single-file `delete_note` change
-an existing file, the fork copies that file into `<project>/.bm-history/`. A directory
-`delete_note` copies every regular file under that directory first. Symlinks are not
-followed, and `.bm-history` is not copied into itself. If any copy fails, the delete
-raises and the files stay. There is no restore command; the copies are ordinary files.
+an existing file, the fork copies that file into `<project>/.bm-history/` and records
+the checksum of those bytes. If the file changes after the copy, the write or delete
+raises and the newer bytes stay. A directory `delete_note` or `move_note` copies every
+regular child first. A local directory delete then removes only those copied paths; a
+path that was not copied, or whose checksum changed, is left in place. Symlinks are
+not followed, `.bm-history` is not copied into itself, and a symlinked `.bm-history`
+is refused. `.bm-history` is in the default ignore patterns and the `.bmignore`
+template, next to `.bm-logs`. If any copy fails, the delete raises and the files stay.
+There is no restore command; the copies are ordinary files.
+
+A permalink insert or update edits only that frontmatter line (or prepends a fence
+when the note has none). Other bytes, including `yes`, flow lists, timestamps, and
+trailing blank lines, stay as they were. The first time a project is indexed
+(`last_scan_timestamp` is empty), the log says so and names the display name and
+config key. Pause Obsidian Sync before that first launch.
 
 ## Setup
 
@@ -284,10 +302,12 @@ files it created, including a `config.json` that did not exist before, the launc
 plist template, and the Cursor rule file when setup created it.
 
 Every MCP entry (`~/.cursor/mcp.json`, Claude Desktop, and `~/.claude.json`) gets
-`env.BASIC_MEMORY_NO_PROMOS=1`. The launchd plist sets the same variable. Setup also
-writes `logfire_enabled=false`, `logfire_send_to_logfire=false`, and
-`cloud_promo_opt_out=true`. Uninstall restores the previous `config.json`, so a
-Logfire setting you had before setup comes back.
+`env.BASIC_MEMORY_NO_PROMOS=1` and `env.BASIC_MEMORY_FORCE_LOCAL=1`. The launchd
+plist sets both. Setup also writes `logfire_enabled=false`,
+`logfire_send_to_logfire=false`, and `cloud_promo_opt_out=true`. If a cloud API key,
+OAuth tokens, a default workspace, or a cloud-mode project is already configured,
+setup stops with an error and does not write MCP entries. Uninstall restores the
+previous `config.json`, so a Logfire setting you had before setup comes back.
 
 Claude Code user-scope MCP servers are written to `~/.claude.json` (`mcpServers`),
 which is where `claude mcp add --scope user` writes them. `~/.claude/settings.json`

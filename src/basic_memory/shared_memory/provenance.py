@@ -56,6 +56,22 @@ def keep_first_writer(existing: Mapping[str, Any], merged: dict[str, Any]) -> No
         merged.pop(CREATED_BY_CLIENT_KEY, None)
 
 
+def prepend_frontmatter_block(markdown: str, values: Mapping[str, str]) -> str:
+    """Add a frontmatter fence in front of a note that does not have one.
+
+    The original bytes follow the new fence, including trailing blank lines.
+    A blank line separates the fence from a body that does not already start
+    with a newline.
+    """
+    newline = "\r\n" if "\r\n" in markdown else "\n"
+    lines = ["---" + newline]
+    lines.extend(_yaml_line(key, value, newline) for key, value in values.items())
+    lines.append("---" + newline)
+    if markdown.startswith(("\n", "\r\n")):
+        return "".join(lines) + markdown
+    return "".join(lines) + newline + markdown
+
+
 def write_frontmatter_lines(markdown: str, values: Mapping[str, str]) -> str:
     """Set top-level keys in existing frontmatter without re-serializing the rest.
 

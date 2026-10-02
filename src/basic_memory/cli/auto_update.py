@@ -30,7 +30,8 @@ BREW_UPGRADE_TIMEOUT_SECONDS = 600
 FORK_LOCAL_LABEL = "pelumi"
 FORK_INSTALL_COMMAND = (
     "uv tool install --force --prerelease=allow "
-    '"basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@main"'
+    '"basic-memory @ git+https://github.com/PelumiAlesh/basic-memory'
+    '@cursor/v2-stack-integrated-7b2f"'
 )
 
 

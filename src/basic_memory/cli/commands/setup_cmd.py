@@ -36,6 +36,7 @@ class SetupPlan:
     config_dir: Path
     session_capture: bool
     install_launchd: bool
+    brief_inject: bool = False
 
 
 def resolve_cli_binary(explicit: Path | None) -> Path:
@@ -58,13 +59,49 @@ def resolve_cli_binary(explicit: Path | None) -> Path:
 
 
 def mcp_stdio_entry(binary: Path) -> dict[str, Any]:
-    # Promo analytics reads this env, not a config flag. Every process setup
-    # launches gets it. A shell the owner starts later does not inherit it.
+    # Promo analytics reads BASIC_MEMORY_NO_PROMOS. BASIC_MEMORY_FORCE_LOCAL
+    # keeps stdio on the in-process API even when a cloud key or a cloud-mode
+    # project is still in config. A shell the owner starts later does not inherit these.
     return {
         "command": str(binary),
         "args": ["mcp"],
-        "env": {"BASIC_MEMORY_NO_PROMOS": "1"},
+        "env": {"BASIC_MEMORY_NO_PROMOS": "1", "BASIC_MEMORY_FORCE_LOCAL": "1"},
     }
+
+
+def cloud_setup_blockers(config: Any) -> list[str]:
+    """Reasons setup must stop because a call could leave this Mac.
+
+    The named project is forced local later. That does not clear a cloud API
+    key, saved OAuth tokens, a default workspace, or another project's cloud mode.
+    An unknown project name is routed to the cloud while any of those exist.
+    """
+    from basic_memory.cli.auth import CLIAuth
+
+    reasons: list[str] = []
+    if getattr(config, "cloud_api_key", None):
+        reasons.append("a cloud API key is saved (cloud_api_key)")
+    if getattr(config, "default_workspace", None):
+        reasons.append("a default cloud workspace is set (default_workspace)")
+    auth = CLIAuth(client_id=config.cloud_client_id, authkit_domain=config.cloud_domain)
+    if auth.load_tokens() is not None:
+        reasons.append("cloud OAuth tokens are saved")
+    for name, entry in config.projects.items():
+        if entry.mode == ProjectMode.CLOUD:
+            reasons.append(f"project {name!r} is in cloud mode")
+    return reasons
+
+
+def refuse_cloud_setup(config: Any) -> None:
+    reasons = cloud_setup_blockers(config)
+    if not reasons:
+        return
+    detail = "\n- ".join(reasons)
+    raise ValueError(
+        "Refusing setup while cloud access is configured. "
+        "Memory stays on this Mac only when nothing here can route a call to the cloud.\n"
+        f"- {detail}"
+    )
 
 
 def routing_document(primary_project: str) -> dict[str, Any]:
@@ -90,11 +127,13 @@ def describe_plan(plan: SetupPlan) -> str:
             f"Claude Code MCP: {paths.claude_code_mcp_path()} (user scope, not settings.json)",
             f"HTTP MCP URL: http://127.0.0.1:{plan.mcp_port}/mcp",
             f"Launchd: {'install' if plan.install_launchd else 'skip'} ({LAUNCHD_LABEL})",
-            "Offline: BASIC_MEMORY_NO_PROMOS=1 on every MCP entry and the launchd agent",
+            "Offline: BASIC_MEMORY_NO_PROMOS=1 and BASIC_MEMORY_FORCE_LOCAL=1 "
+            "on every MCP entry and the launchd agent",
             "Logfire export: forced off (logfire_enabled and logfire_send_to_logfire)",
             f"Cursor rule file: {paths.cursor_user_rule_path()} (model-followed, not guaranteed)",
             f"Session capture: {'on' if plan.session_capture else 'off'}",
-            "Hooks: Cursor sessionStart (new chats only); Claude Code UserPromptSubmit",
+            f"Brief injection: {'on' if plan.brief_inject else 'off'}",
+            "Hooks: brief hooks only with --brief; stop hooks only with --session-capture",
         ]
     )
 
@@ -122,6 +161,7 @@ def apply_config(
     config.mcp_http_client_tokens = dict(fork_tokens.client_tokens)
     config.default_project = plan.project_name
     config.session_capture_enabled = plan.session_capture
+    config.brief_inject_enabled = plan.brief_inject
     project_path = plan.project_path.expanduser().resolve().as_posix()
     if plan.project_name not in config.projects:
         config.projects[plan.project_name] = ProjectEntry(
@@ -162,6 +202,11 @@ def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
         json_edit.remember_original(setup_manifest, plan.config_dir, config_file)
 
     manager = ConfigManager()
+    # Trigger: any project is cloud-mode, or cloud credentials are saved.
+    # Why: FORCE_LOCAL on the entries we write is not enough if setup still
+    # finishes and leaves those credentials in place for another process.
+    # Outcome: setup writes nothing else and tells the owner what to clear.
+    refuse_cloud_setup(manager.config)
     fork_tokens = tokens.ensure_tokens(manager.config_dir)
     if not dry_run:
         _backup_config_if_needed(setup_manifest, manager.config_file, manager.config_dir)
@@ -214,14 +259,25 @@ def run_setup(plan: SetupPlan, *, dry_run: bool) -> manifest.SetupManifest:
         json_edit.remember_original(
             setup_manifest, manager.config_dir, paths.claude_code_settings_path()
         )
-        install_cursor_hooks(launcher, session_capture=plan.session_capture)
-        install_claude_hooks(launcher, session_capture=plan.session_capture)
+        install_cursor_hooks(
+            launcher,
+            session_capture=plan.session_capture,
+            brief_inject=plan.brief_inject,
+        )
+        install_claude_hooks(
+            launcher,
+            session_capture=plan.session_capture,
+            brief_inject=plan.brief_inject,
+        )
 
         rule_path = paths.cursor_user_rule_path()
         json_edit.remember_original(setup_manifest, manager.config_dir, rule_path)
         rule_path.parent.mkdir(parents=True, exist_ok=True)
         rule_path.write_text(
-            cursor_brief_rule_file(float(manager.config.brief_refresh_hours)),
+            cursor_brief_rule_file(
+                float(manager.config.brief_refresh_hours),
+                inject=plan.brief_inject,
+            ),
             encoding="utf-8",
         )
 
@@ -277,6 +333,11 @@ def setup_command(
         "--session-capture",
         help="Enable local session capture hooks (off by default)",
     ),
+    brief: bool = typer.Option(
+        False,
+        "--brief",
+        help="Inject the memory brief into new Cursor chats and Claude Code prompts (off by default)",
+    ),
     install_launchd: bool = typer.Option(
         True,
         "--launchd/--no-launchd",
@@ -308,11 +369,19 @@ def setup_command(
         config_dir=resolve_data_dir(),
         session_capture=session_capture,
         install_launchd=install_launchd,
+        brief_inject=brief,
     )
+    config_file = plan.config_dir / CONFIG_FILE_NAME
+    if config_file.is_file():
+        try:
+            refuse_cloud_setup(ConfigManager().config)
+        except ValueError as error:
+            typer.echo(f"Error: {error}", err=True)
+            raise typer.Exit(1)
     typer.echo(describe_plan(plan))
     if dry_run:
         typer.echo("\n(dry run — no files written)")
-        typer.echo(cursor_rule_install_notice(6.0, paths.cursor_user_rule_path()))
+        typer.echo(cursor_rule_install_notice(6.0, paths.cursor_user_rule_path(), inject=brief))
         return
     if not yes and not typer.confirm("Apply this setup plan?", default=False):
         raise typer.Abort()
@@ -324,9 +393,12 @@ def setup_command(
         raise typer.Exit(1)
 
     typer.echo("\nSetup complete.")
-    typer.echo(
-        "Claude Code adds the brief on UserPromptSubmit, including a resumed session. "
-        "Cursor sessionStart briefs a new chat only."
-    )
+    if brief:
+        typer.echo(
+            "Claude Code adds the brief on UserPromptSubmit, including a resumed session. "
+            "Cursor sessionStart briefs a new chat only."
+        )
+    else:
+        typer.echo("Brief injection is off. Re-run with --brief to put note text in host prompts.")
     hours = float(ConfigManager().config.brief_refresh_hours)
-    typer.echo(cursor_rule_install_notice(hours, paths.cursor_user_rule_path()))
+    typer.echo(cursor_rule_install_notice(hours, paths.cursor_user_rule_path(), inject=brief))

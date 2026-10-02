@@ -42,7 +42,10 @@ def test_merge_mcp_servers_preserves_other_entries() -> None:
     assert merged["mcpServers"]["other"]["command"] == "echo"
     entry = merged["mcpServers"]["basic-memory"]
     assert entry["command"] == "/tmp/bm"
-    assert entry["env"] == {"BASIC_MEMORY_NO_PROMOS": "1"}
+    assert entry["env"] == {
+        "BASIC_MEMORY_NO_PROMOS": "1",
+        "BASIC_MEMORY_FORCE_LOCAL": "1",
+    }
 
 
 def test_run_setup_idempotent_tokens(
@@ -71,7 +74,7 @@ def test_run_setup_idempotent_tokens(
     second = tokens.load_tokens(bm_home)
     assert second == first
     hooks = json.loads(paths.cursor_hooks_path().read_text())
-    assert len(hooks["hooks"]["sessionStart"]) == 1
+    assert "sessionStart" not in hooks["hooks"]
     assert "stop" not in hooks["hooks"]
 
     token_path = tokens.token_file_path(bm_home)
@@ -107,16 +110,17 @@ def test_run_setup_writes_client_configs(
     assert desktop["mcpServers"]["basic-memory"]["args"] == ["mcp"]
 
     hooks = json.loads(paths.cursor_hooks_path().read_text())
-    command = hooks["hooks"]["sessionStart"][0]["command"]
-    assert SETUP_OWNED_HOOK_RE.search(command)
+    assert "sessionStart" not in hooks["hooks"]
     assert "beforeSubmitPrompt" not in hooks["hooks"]
     assert "stop" in hooks["hooks"]
+    stop_command = hooks["hooks"]["stop"][0]["command"]
+    assert SETUP_OWNED_HOOK_RE.search(stop_command)
 
     claude_mcp = json.loads(paths.claude_code_mcp_path().read_text())
     assert claude_mcp["mcpServers"]["basic-memory"]["command"] == str(binary)
     claude_settings = json.loads(paths.claude_code_settings_path().read_text())
     assert "mcpServers" not in claude_settings
-    assert "UserPromptSubmit" in claude_settings["hooks"]
+    assert "UserPromptSubmit" not in claude_settings["hooks"]
     assert "Stop" in claude_settings["hooks"]
 
     config = ConfigManager().config
@@ -133,13 +137,15 @@ def test_run_setup_writes_client_configs(
     ):
         entry = json.loads(mcp_path.read_text())["mcpServers"]["basic-memory"]
         assert entry["env"]["BASIC_MEMORY_NO_PROMOS"] == "1"
+        assert entry["env"]["BASIC_MEMORY_FORCE_LOCAL"] == "1"
     rule = paths.cursor_user_rule_path().read_text(encoding="utf-8")
     assert "alwaysApply: true" in rule
-    assert "get_brief" in rule
-    assert "6 hours" in rule
-    assert "not guaranteed" in rule
+    assert "brief injection is off" in rule
+    assert "unless the user asks" in rule
+    assert "6 hours" not in rule
     plist = (bm_home / "basic-memory-mcp.plist").read_text(encoding="utf-8")
     assert "BASIC_MEMORY_NO_PROMOS" in plist
+    assert "BASIC_MEMORY_FORCE_LOCAL" in plist
     assert "<string>1</string>" in plist
 
 
@@ -193,8 +199,8 @@ def test_setup_cli_dry_run(bm_home: Path, tmp_path: Path) -> None:
     )
     assert result.exit_code == 0
     assert "dry run" in result.stdout
-    assert "not guaranteed" in result.stdout
-    assert "get_brief" in result.stdout
+    assert "Brief injection is off" in result.stdout
+    assert "unless the user asks" in result.stdout
     assert not (tmp_path / "vault").exists()
     assert not paths.cursor_user_rule_path().exists()
 
@@ -232,7 +238,7 @@ def test_uninstall_restores_created_and_existing_files(
     assert paths.claude_code_mcp_path().is_file()
     assert "basic-memory" in json.loads(paths.claude_code_mcp_path().read_text())["mcpServers"]
     assert "echo user-hook" in hooks_path.read_text(encoding="utf-8")
-    assert "fork-cursor-session-start" in hooks_path.read_text(encoding="utf-8")
+    assert "fork-cursor-session-start" not in hooks_path.read_text(encoding="utf-8")
 
     run_uninstall()
     assert settings.read_text(encoding="utf-8") == original_settings
@@ -258,6 +264,7 @@ def test_claude_user_prompt_emits_additional_context(
     )
     monkeypatch.setattr("basic_memory.setup.fork_hooks._maybe_record_delivery", lambda _cid: None)
     monkeypatch.setattr("basic_memory.setup.fork_hooks._log_hook_metadata", lambda *a, **k: None)
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._brief_injection_enabled", lambda: True)
 
     run_claude_user_prompt()
     output = capsys.readouterr().out
@@ -316,7 +323,7 @@ def test_uninstall_restores_cursor_rule_and_logfire(
     assert saved.logfire_enabled is False
     assert saved.logfire_send_to_logfire is False
     assert saved.cloud_promo_opt_out is True
-    assert "get_brief" in rule.read_text(encoding="utf-8")
+    assert "unless the user asks" in rule.read_text(encoding="utf-8")
 
     run_uninstall()
     assert rule.read_text(encoding="utf-8") == "owner rule\n"
@@ -329,3 +336,150 @@ def test_uninstall_restores_cursor_rule_and_logfire(
 def test_resolve_cli_binary_requires_existing_path(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="not found"):
         resolve_cli_binary(tmp_path / "missing")
+
+
+def test_brief_opt_in_installs_host_hooks(
+    bm_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr("basic_memory.setup.launchd.install_launchd", lambda **_: None)
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+        brief_inject=True,
+    )
+    run_setup(plan, dry_run=False)
+
+    hooks = json.loads(paths.cursor_hooks_path().read_text())
+    assert "fork-cursor-session-start" in hooks["hooks"]["sessionStart"][0]["command"]
+    claude = json.loads(paths.claude_code_settings_path().read_text())
+    command = claude["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert "fork-claude-user-prompt" in command
+    assert ConfigManager().config.brief_inject_enabled is True
+    rule = paths.cursor_user_rule_path().read_text(encoding="utf-8")
+    assert "get_brief" in rule
+    assert "6 hours" in rule
+    assert "not guaranteed" in rule
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda config: setattr(config, "cloud_api_key", "bmc_test"), "cloud API key"),
+        (lambda config: setattr(config, "default_workspace", "ws_test"), "default cloud workspace"),
+    ],
+)
+def test_setup_refuses_saved_cloud_credentials(
+    bm_home: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutate,
+    message: str,
+) -> None:
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+    manager = ConfigManager()
+    config = manager.load_config()
+    mutate(config)
+    manager.save_config(config)
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+    )
+    with pytest.raises(ValueError, match=message):
+        run_setup(plan, dry_run=False)
+    assert not paths.cursor_mcp_path().exists()
+    assert not paths.claude_code_mcp_path().exists()
+
+
+def test_setup_refuses_cloud_mode_project(
+    bm_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from basic_memory.config import ProjectEntry, ProjectMode
+
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+    manager = ConfigManager()
+    config = manager.load_config()
+    config.projects["remote"] = ProjectEntry(path=str(tmp_path / "remote"), mode=ProjectMode.CLOUD)
+    manager.save_config(config)
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+    )
+    with pytest.raises(ValueError, match="cloud mode"):
+        run_setup(plan, dry_run=False)
+    assert not paths.cursor_mcp_path().exists()
+
+
+def test_setup_refuses_saved_oauth_tokens(
+    bm_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    binary = tmp_path / "bm"
+    binary.write_text("", encoding="utf-8")
+    monkeypatch.setattr("basic_memory.cli.commands.hook._hook_launcher", lambda: str(binary))
+    ConfigManager().load_config()
+    token_file = bm_home / "basic-memory-cloud.json"
+    token_file.write_text('{"access_token":"secret"}\n', encoding="utf-8")
+
+    from basic_memory.cli.commands import setup_cmd as setup_mod
+
+    plan = setup_mod.SetupPlan(
+        project_name="main",
+        project_path=tmp_path / "vault",
+        binary=binary,
+        mcp_port=8000,
+        config_dir=bm_home,
+        session_capture=False,
+        install_launchd=False,
+    )
+    with pytest.raises(ValueError, match="OAuth tokens"):
+        run_setup(plan, dry_run=False)
+    assert not paths.cursor_mcp_path().exists()
+
+
+def test_hooks_print_nothing_when_brief_injection_is_off(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from basic_memory.setup.fork_hooks import run_claude_user_prompt, run_cursor_session_start
+
+    def refuse_render() -> str:
+        raise AssertionError("brief must not be rendered")
+
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._brief_injection_enabled", lambda: False)
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._render_brief_text", refuse_render)
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._log_hook_metadata", lambda *a, **k: None)
+    monkeypatch.setattr("basic_memory.setup.fork_hooks._read_stdin_json", lambda: {})
+
+    run_cursor_session_start()
+    assert capsys.readouterr().out.strip() == "{}"
+    run_claude_user_prompt()
+    assert capsys.readouterr().out == ""

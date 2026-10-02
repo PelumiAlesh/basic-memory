@@ -42,14 +42,27 @@ async def test_get_brief_omits_missing_profile_without_error_text(client, test_p
 
 
 @pytest.mark.asyncio
-async def test_get_brief_includes_profile_when_present(client, test_project) -> None:
+async def test_get_brief_includes_profile_when_present(
+    client, test_project, app_config, config_manager
+) -> None:
+    from basic_memory import config as config_module
+
     await write_note(
         project=test_project.name,
         title="profile",
         directory="me",
         content="# Profile\n\nHuman-reviewed summary.",
     )
-    text = await get_brief(project=test_project.name)
+    app_config.brief_include_profile = True
+    config_module._CONFIG_CACHE = app_config
+    stat = config_manager.config_file.stat()
+    config_module._CONFIG_MTIME = stat.st_mtime
+    config_module._CONFIG_SIZE = stat.st_size
+    try:
+        text = await get_brief(project=test_project.name)
+    finally:
+        app_config.brief_include_profile = False
+        config_module._CONFIG_CACHE = app_config
     assert "## Profile" in text
     assert "Human-reviewed summary" in text
 
@@ -74,7 +87,8 @@ async def test_get_brief_does_not_log_note_bodies(
 def test_brief_config_defaults() -> None:
     config = BasicMemoryConfig()
     assert config.brief_refresh_hours == 6.0
-    assert config.brief_include_profile is True
+    assert config.brief_include_profile is False
+    assert config.brief_inject_enabled is False
 
 
 @pytest.mark.asyncio
@@ -95,7 +109,7 @@ async def test_get_brief_can_omit_profile(client, test_project, app_config, conf
     try:
         text = await get_brief(project=test_project.name)
     finally:
-        app_config.brief_include_profile = True
+        app_config.brief_include_profile = False
         config_module._CONFIG_CACHE = app_config
     assert "Leave this out." not in text
     assert "## Profile" not in text
@@ -105,9 +119,9 @@ async def test_get_brief_can_omit_profile(client, test_project, app_config, conf
 async def test_get_brief_records_conversation_and_throttles(client, test_project) -> None:
     await write_note(
         project=test_project.name,
-        title="profile",
-        directory="me",
-        content="# Profile\n\nThrottle marker.",
+        title="state",
+        directory="project",
+        content="# State\n\nThrottle marker.",
     )
     first = await get_brief(project=test_project.name, conversation_id="chat-1")
     assert "Throttle marker." in first

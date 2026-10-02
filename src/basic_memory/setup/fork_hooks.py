@@ -59,6 +59,14 @@ def _primary_project() -> str:
     return ConfigManager().config.default_project or "main"
 
 
+def _brief_injection_enabled() -> bool:
+    """Host prompt injection is off unless `bm setup --brief` wrote the flag."""
+    try:
+        return bool(ConfigManager().config.brief_inject_enabled)
+    except (Exception, SystemExit):
+        return False
+
+
 def _render_brief_text() -> str:
     from basic_memory.cli.commands.brief import render_brief_for_project
 
@@ -104,7 +112,11 @@ def run_cursor_session_start() -> None:
     payload = _read_stdin_json()
     conversation_id = _conversation_id(payload)
     _log_hook_metadata("session-start", "cursor", conversation_id)
-    if not _should_deliver(conversation_id):
+    # Trigger: brief injection was not opted in.
+    # Why: the brief contains note text. Printing it here sends that text to
+    # the host, which sends it to the model provider.
+    # Outcome: an empty hook result, with no note titles or bodies.
+    if not _brief_injection_enabled() or not _should_deliver(conversation_id):
         print("{}")
         return
     brief = _render_brief_text()
@@ -133,7 +145,7 @@ def run_claude_user_prompt() -> None:
     payload = _read_stdin_json()
     conversation_id = _conversation_id(payload)
     _log_hook_metadata("prompt-submit", "claude-code", conversation_id)
-    if not _should_deliver(conversation_id):
+    if not _brief_injection_enabled() or not _should_deliver(conversation_id):
         return
     brief = _render_brief_text()[:10_000]
     _maybe_record_delivery(conversation_id)

@@ -11,12 +11,16 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.mcp.write_verification import verify_note_move
+from basic_memory.mcp.write_verification import raise_if_verification_failed, verify_note_move
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
 from basic_memory.schemas.directory import MAX_DIRECTORY_PAGE_SIZE
 from basic_memory.schemas.project_info import ProjectItem
-from basic_memory.shared_memory.write_safety import snapshot_local_note
+from basic_memory.shared_memory.write_safety import (
+    assert_snapshot_current,
+    snapshot_local_directory,
+    snapshot_local_note,
+)
 from basic_memory.utils import (
     generate_permalink,
     normalize_project_reference,
@@ -702,7 +706,10 @@ move_note(identifier="{identifier}", destination_path="notes/{destination_path.s
                     if is_memory_url
                     else resolved_identifier
                 )
+                snapshot_local_directory(active_project.home, source_directory)
                 result = await knowledge_client.move_directory(source_directory, destination_path)
+            except ToolError:
+                raise
             except Exception as e:  # pragma: no cover
                 logger.error(
                     f"Directory move failed for '{identifier}' to '{destination_path}': {e}"
@@ -1031,7 +1038,8 @@ move_note("{identifier}", destination_folder="notes")
             if source_entity is None:
                 source_entity = await knowledge_client.get_entity(resolved_entity_id)
             source_path = source_entity.file_path
-            snapshot_local_note(active_project.home, source_path)
+            snapshot = snapshot_local_note(active_project.home, source_path)
+            assert_snapshot_current(active_project.home, snapshot)
 
             # Call the move API using KnowledgeClient
             result = await knowledge_client.move_entity(resolved_entity_id, destination_path)
@@ -1103,6 +1111,19 @@ move_note("{identifier}", destination_folder="notes")
                     project_home=active_project.home,
                 )
 
+            result_lines = [
+                "✅ Note moved successfully",
+                "",
+                f"📁 **{identifier}** → **{result.file_path}**",
+                f"🔗 Permalink: {result.permalink}",
+                "📊 Database and search index updated",
+                "",
+                f"<!-- Project: {active_project.name} -->",
+            ]
+            if verification is not None:
+                result_lines.append(verification.as_text())
+            text = "\n".join(result_lines)
+
             if output_format == "json":
                 payload: dict[str, Any] = {
                     "moved": True,
@@ -1114,23 +1135,20 @@ move_note("{identifier}", destination_folder="notes")
                 }
                 if verification is not None:
                     payload["verification"] = verification.as_dict()
-                    if verification.status == "failed":
-                        payload["error"] = "WRITE_VERIFICATION_FAILED"
+                raise_if_verification_failed(
+                    verification,
+                    output_format=output_format,
+                    payload=payload,
+                    text=text,
+                )
                 return payload
 
-            # Build success message
-            result_lines = [
-                "✅ Note moved successfully",
-                "",
-                f"📁 **{identifier}** → **{result.file_path}**",
-                f"🔗 Permalink: {result.permalink}",
-                "📊 Database and search index updated",
-                "",
-                f"<!-- Project: {active_project.name} -->",
-            ]
-
-            if verification is not None:
-                result_lines.append(verification.as_text())
+            raise_if_verification_failed(
+                verification,
+                output_format=output_format,
+                payload={},
+                text=text,
+            )
 
             # Log the operation
             logger.debug(
@@ -1138,8 +1156,10 @@ move_note("{identifier}", destination_folder="notes")
                 f"source={identifier} destination={result.file_path} permalink={result.permalink}"
             )
 
-            return "\n".join(result_lines)
+            return text
 
+        except ToolError:
+            raise
         except Exception as e:
             logger.error(f"Move failed for '{identifier}' to '{destination_path}': {e}")
             _raise_move_failure(
