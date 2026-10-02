@@ -11,7 +11,11 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.mcp.write_verification import raise_if_verification_failed, verify_note_move
+from basic_memory.mcp.write_verification import (
+    is_verification_failure,
+    raise_if_verification_failed,
+    verify_note_move,
+)
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
 from basic_memory.schemas.directory import MAX_DIRECTORY_PAGE_SIZE
@@ -1158,9 +1162,9 @@ move_note("{identifier}", destination_folder="notes")
 
             return text
 
-        except ToolError:
-            raise
         except Exception as e:
+            if is_verification_failure(e):
+                raise
             logger.error(f"Move failed for '{identifier}' to '{destination_path}': {e}")
             _raise_move_failure(
                 output_format,

@@ -283,3 +283,35 @@ async def test_directory_delete_aborts_when_snapshot_fails(client, test_project,
 
     note_path = Path(test_project.path) / "bundle" / "Alpha.md"
     assert "keep-alpha" in note_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_move_verification_accepts_a_case_folded_folder() -> None:
+    from datetime import datetime, timezone
+
+    from basic_memory.mcp.write_verification import verify_note_move
+
+    stored = EntityResponseV2(
+        external_id="11111111-1111-1111-1111-111111111111",
+        id=1,
+        title="Incoming Note",
+        note_type="note",
+        file_path="Schemas/Incoming Note.md",
+        content="body",
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    class Reader:
+        async def get_entity(self, entity_id: str) -> EntityResponseV2:
+            return stored
+
+    result = await verify_note_move(
+        Reader(),
+        external_id=stored.external_id,
+        source_path="inbox/Incoming Note.md",
+        destination_path="schemas/Incoming Note.md",
+        project_home=None,
+    )
+    assert result.status == "verified"
+    assert result.checks == {"index": "ok", "disk": "remote"}

@@ -1721,7 +1721,7 @@ async def test_edit_note_reports_the_accepted_db_checksum(
     db_checksum = "b" * 64  # a real, already-persisted SHA-256 hex digest
     real_patch_entity = KnowledgeClient.patch_entity
 
-    async def fake_patch_entity(self, entity_id, patch_data):
+    async def fake_patch_entity(self, entity_id, patch_data, *, base_checksum=None):
         result = await real_patch_entity(self, entity_id, patch_data)
         return result.model_copy(
             update={"file_checksum": file_checksum, "db_checksum": db_checksum}

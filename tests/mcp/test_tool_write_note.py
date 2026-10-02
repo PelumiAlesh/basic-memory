@@ -267,15 +267,20 @@ async def test_write_note_reports_the_accepted_db_checksum(
 
     monkeypatch.setattr(KnowledgeClient, "write_note", fake_write_note)
 
-    result = await write_note(
-        project=test_project.name,
-        title="Deferred Materialization Note",
-        directory="test",
-        content="# Deferred Materialization Note\n\nBody.",
-    )
+    # The injected entity is not in the index, so read-back fails. The checksum
+    # is still named, and the failure is an error rather than a success string.
+    with pytest.raises(ToolError) as exc_info:
+        await write_note(
+            project=test_project.name,
+            title="Deferred Materialization Note",
+            directory="test",
+            content="# Deferred Materialization Note\n\nBody.",
+        )
 
+    result = str(exc_info.value)
     assert "checksum: unknown" not in result
     assert f"checksum: {db_checksum[:8]}" in result
+    assert "status: failed" in result
 
 
 @pytest.mark.asyncio

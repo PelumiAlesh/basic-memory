@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
 from basic_memory.mcp.clients.knowledge import KnowledgeClient
 
@@ -287,10 +288,14 @@ async def test_delete_note_json_output(mcp_server, app, test_project):
 async def test_delete_note_directory_json_output_failure_is_structured(
     mcp_server, app, test_project, monkeypatch
 ):
-    async def mock_delete_directory(self, directory: str):
-        raise RuntimeError("simulated directory delete failure")
+    note = Path(test_project.path) / "json-int" / "a.md"
+    note.parent.mkdir(parents=True)
+    note.write_text("alpha\n", encoding="utf-8")
 
-    monkeypatch.setattr(KnowledgeClient, "delete_directory", mock_delete_directory)
+    async def mock_resolve(self, identifier: str, *, strict: bool = False) -> str:
+        raise ToolError("simulated directory delete failure")
+
+    monkeypatch.setattr(KnowledgeClient, "resolve_entity", mock_resolve)
 
     async with Client(mcp_server) as client:
         result = await client.call_tool(
@@ -310,7 +315,8 @@ async def test_delete_note_directory_json_output_failure_is_structured(
         assert payload["deleted"] is False
         assert payload["is_directory"] is True
         assert payload["identifier"] == "json-int"
-        assert "simulated directory delete failure" in payload["error"]
+        assert "Directory delete incomplete" in payload["error"]
+        assert "simulated directory delete failure" in payload["errors"][0]["error"]
 
 
 @pytest.mark.asyncio

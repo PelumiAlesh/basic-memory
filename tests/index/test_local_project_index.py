@@ -2456,7 +2456,8 @@ async def test_local_project_index_preserves_thematic_break_body_after_permalink
     persisted_content = thematic_path.read_bytes().decode("utf-8")
     normalized_content = persisted_content.replace("\r\n", "\n")
     assert f"permalink: {test_project.permalink}/notes/thematic-break" in persisted_content
-    assert normalized_content.endswith(original_content.rstrip())
+    # The thematic break stays body text, including its trailing newline.
+    assert normalized_content.endswith(original_content)
 
     async with db.scoped_session(session_maker) as session:
         entity = await entity_repository.get_by_file_path(session, "notes/thematic-break.md")

@@ -38,6 +38,29 @@ def verification_enabled() -> bool:
     return ConfigManager().config.verify_writes
 
 
+def is_verification_failure(error: BaseException) -> bool:
+    """True when this error is the read-back failure, not a move or edit refusal.
+
+    Ordinary tool errors (a missing note, a taken destination) still become the
+    formatted guidance those tools already return. A failed read-back stays an
+    error result instead of a success string.
+    """
+    message = str(error)
+    return "WRITE_VERIFICATION_FAILED" in message or "status: failed" in message
+
+
+def _same_note_path(left: str, right: str) -> bool:
+    """True when two paths name the same note, including a case-folded folder.
+
+    A local move into an existing folder keeps that folder's casing. The index
+    path then differs from the requested string only by case.
+    """
+    return (
+        left.replace("\\", "/").strip("/").casefold()
+        == right.replace("\\", "/").strip("/").casefold()
+    )
+
+
 def raise_if_verification_failed(
     verification: WriteVerification | None,
     *,
@@ -150,7 +173,7 @@ async def verify_note_move(
     checks: dict[str, str] = {}
     if stored is None:
         return WriteVerification("failed", {"index": "missing"}, "note was not found after move")
-    if stored.file_path.strip("/") != destination_path.strip("/"):
+    if not _same_note_path(stored.file_path, destination_path):
         checks["index"] = "mismatch"
         return WriteVerification("failed", checks, f"index has the note at {stored.file_path}")
     checks["index"] = "ok"
@@ -160,10 +183,10 @@ async def verify_note_move(
         return WriteVerification("verified", checks)
     drained = await drain_local_materialization()
     destination_exists = (root / stored.file_path).is_file()
-    source_lingers = (
-        bool(source_path)
-        and source_path != stored.file_path
-        and (root / str(source_path)).is_file()
+    lingering_source = source_path
+    source_lingers = lingering_source is not None and (
+        not _same_note_path(lingering_source, stored.file_path)
+        and (root / lingering_source).is_file()
     )
     if destination_exists and not source_lingers:
         checks["disk"] = "ok"

@@ -23,6 +23,7 @@ from basic_memory.file_utils import (
 )
 from basic_memory.ignore_utils import IGNORED_PATH_REJECTION_DETAIL
 from basic_memory.mcp.write_verification import (
+    is_verification_failure,
     raise_if_verification_failed,
     verify_note_edit,
     verify_note_write,
@@ -962,9 +963,9 @@ async def edit_note(
                 )
                 return add_project_metadata(summary_result, active_project.name)
 
-            except ToolError:
-                raise
             except Exception as e:
+                if is_verification_failure(e):
+                    raise
                 logger.error(f"Error editing note: {e}")
                 if isinstance(e, UnresolvedProjectRouteError):
                     if output_format == "json":

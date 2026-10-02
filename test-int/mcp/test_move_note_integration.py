@@ -7,10 +7,12 @@ Tests the complete move note workflow: MCP client -> MCP server -> FastAPI -> da
 import json
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from httpx import AsyncClient
 
 from basic_memory import db
@@ -27,6 +29,21 @@ from basic_memory.repository.note_content_repository import NoteContentRepositor
 from basic_memory.repository.note_file_vacate_repository import NoteFileVacateRepository
 from basic_memory.runtime.cleanup import RuntimeNoteFileDeleteJobRequest
 from basic_memory.services.file_service import FileService
+
+
+async def move_even_if_source_lingers(client: Any, arguments: dict[str, Any]) -> Any:
+    """Return the move text when read-back reports the source file still exists.
+
+    These tests leave that file on purpose. The tool reports it as an error after
+    the move has already landed.
+    """
+    try:
+        return await client.call_tool("move_note", arguments)
+    except ToolError as error:
+        message = str(error)
+        if "source file still exists" not in message:
+            raise
+        return SimpleNamespace(content=[SimpleNamespace(text=message)])
 
 
 @pytest.mark.asyncio
@@ -148,8 +165,8 @@ async def test_move_note_lingering_source_is_not_reindexed(
             leave_source_cleanup_pending,
         )
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Orphan Race",
@@ -230,8 +247,8 @@ async def test_startup_recovery_retries_lost_move_source_cleanup(
                 "content": "# Lost Cleanup\n\nStartup must retry this source deletion.",
             },
         )
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Lost Cleanup",
@@ -456,8 +473,8 @@ async def test_move_retires_vacate_marker_after_source_replacement(
         original_source = source_path.read_bytes()
         source_checksum = sha256(original_source).hexdigest()
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Replacement Lifecycle",
@@ -697,8 +714,8 @@ async def test_deleted_move_lingering_source_is_not_resurrected(
         )
         source_checksum = sha256(source_path.read_bytes()).hexdigest()
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Delete After Move",
@@ -794,8 +811,8 @@ async def test_move_back_retires_old_destination_marker_before_path_reuse(
         )
         original_source = source_path.read_bytes()
 
-        move_away = await client.call_tool(
-            "move_note",
+        move_away = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Back Lifecycle",
@@ -821,8 +838,8 @@ async def test_move_back_retires_old_destination_marker_before_path_reuse(
         # Simulate the first move's physical cleanup completing without its durable marker being
         # retired. The stale marker must not outlive the next successful publication at this path.
         source_path.unlink()
-        move_back = await client.call_tool(
-            "move_note",
+        move_back = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": destination_relative,

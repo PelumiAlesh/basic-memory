@@ -8,7 +8,11 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
-from basic_memory.mcp.write_verification import raise_if_verification_failed, verify_note_delete
+from basic_memory.mcp.write_verification import (
+    is_verification_failure,
+    raise_if_verification_failed,
+    verify_note_delete,
+)
 from basic_memory.schemas.response import DirectoryDeleteError, DirectoryDeleteResult
 from basic_memory.shared_memory.file_history import FileSnapshot
 from basic_memory.shared_memory.write_safety import (
@@ -563,11 +567,13 @@ Total files: 0.
                     }
                 return False  # pragma: no cover
 
-        except ToolError:
-            raise
-        except Exception as e:  # pragma: no cover
-            logger.error(f"Delete failed for '{identifier}': {e}, project: {active_project.name}")
-            _raise_delete_failure(
+        except Exception as e:
+            if is_verification_failure(e):
+                raise
+            logger.error(  # pragma: no cover
+                f"Delete failed for '{identifier}': {e}, project: {active_project.name}"
+            )
+            _raise_delete_failure(  # pragma: no cover
                 output_format,
                 {
                     "deleted": False,
