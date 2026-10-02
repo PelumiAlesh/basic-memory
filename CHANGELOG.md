@@ -61,7 +61,7 @@
   is local and clipped.
 
 - Fork builds identify themselves: `basic-memory --version` and the package metadata
-  both report `0.23.2+pelumi.1` (a PEP 440 local label) when installed from
+  both report `0.24.0+pelumi.1` (a PEP 440 local label) when installed from
   `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The
   periodic update check, the stdio MCP background update, and `bm update` no longer
   replace a fork build with the upstream release; `bm update --force` does so on purpose.
@@ -69,9 +69,11 @@
 - MCP `write_note` and `edit_note` record which app wrote a note in fork-owned
   frontmatter keys: `bm_source_client`, `bm_updated`, and `bm_created_by_client` (the
   first writer, kept across later edits and overwrites). The user's own `updated`,
-  `created`, and `modified` keys are never written, and a stamped edit rewrites only the
-  `bm_*` lines. Writes from apps that send no MCP clientInfo are unchanged. Setting:
-  `record_provenance` (default `true`).
+  `created`, and `modified` keys are never written. Upstream `created_by` and
+  `updated_by` stay the person-or-agent record and are stamped only when the runtime
+  authenticated one; the fork does not copy the app slug into them. A provenance-only
+  edit rewrites only the `bm_*` lines. Writes from apps that send no MCP clientInfo are
+  unchanged. Setting: `record_provenance` (default `true`).
 - Local usage log under each project's `.bm-logs/` (settings `usage_log_enabled`,
   default on, and `usage_log_retention_days`, default 90) with MCP middleware and a stdlib
   hook append path; `bm stats` summarizes calls, latency, conversation coverage, and inferred

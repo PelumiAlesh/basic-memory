@@ -25,19 +25,21 @@ setting that controls the feature and its default.
 ## Fork version and updates
 
 Builds from this repository carry a PEP 440 local version label, for example
-`0.23.2+pelumi.1`. Both `basic-memory --version` and the installed package metadata report it:
+`0.24.0+pelumi.1`. Both `basic-memory --version` and the installed package metadata report it:
 
 ```bash
-uv tool install --prerelease=allow \
-  "basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@main"
-basic-memory --version        # Basic Memory version: 0.23.2+pelumi.1
+uv tool install --prerelease=allow --reinstall \
+  "basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@cursor/v2-stack-integrated-7b2f"
+basic-memory --version        # Basic Memory version: 0.24.0+pelumi.1
 ```
 
 The version comes from `__version__` in `src/basic_memory/__init__.py` (hatch reads it; see
 `[tool.hatch.version]` in `pyproject.toml`). Upstream derives its version from git release tags,
 which the fork does not have. To bump the fork, edit that one string. When an upstream release
 changes it, resolve the merge by keeping the upstream release and the fork label, for example
-`0.23.3+pelumi.1`.
+`0.24.0+pelumi.1`. Upstream v0.24.0 is in this tree and is not tagged yet. The local label sorts
+above a same-numbered public release, the same way `0.23.2+pelumi.1` sorted above PyPI 0.23.2,
+so install this branch on purpose. Do not `uv tool upgrade` against PyPI.
 
 Automatic updates never touch a fork build. The periodic CLI check, the background check in
 stdio `basic-memory mcp`, and `bm update` all compare against the upstream release on PyPI or the
@@ -60,10 +62,18 @@ bm_created_by_client: cursor                 # the app that wrote it first
 ```
 
 - The keys are namespaced. Your own `updated`, `created`, and `modified` keys are never
-  written. A stamped edit replaces only the `bm_*` lines, so every other frontmatter line keeps
-  its exact bytes. An overwrite (`write_note` on an existing note) keeps your values, but
-  upstream Basic Memory re-serializes the whole frontmatter block on overwrite, so a value like
-  `2024-03-01T09:30:00Z` can come back as `2024-03-01 09:30:00+00:00`.
+  written. A stamped edit that changes only the `bm_*` keys replaces only those lines, so every
+  other frontmatter line keeps its exact bytes. An overwrite (`write_note` on an existing note)
+  keeps your values, but upstream Basic Memory re-serializes the whole frontmatter block on
+  overwrite, so a value like `2024-03-01T09:30:00Z` can come back as
+  `2024-03-01 09:30:00+00:00`.
+- Upstream `created_by` and `updated_by` are a different record: the person or agent, stamped
+  only when the runtime authenticated one (cloud writes such as `<member> via <key name>`).
+  A local install supplies no author, so those keys are ordinary frontmatter and a value you
+  typed by hand is left alone. The fork does not copy the app slug into them. `bm_source_client`
+  is the app that wrote last, `bm_created_by_client` is the app that wrote first, and
+  `bm_updated` is when that app stamp was written. None of those three is something
+  `created_by` / `updated_by` store.
 - `bm_created_by_client` is set only when the write creates the note. MCP and API writes keep
   the value a note already has, and a note that never had one (for example, one you wrote in
   Obsidian) does not gain one when an app edits it. Edit the file directly to change it.

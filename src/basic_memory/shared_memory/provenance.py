@@ -3,6 +3,11 @@
 The keys carry a `bm_` prefix so they never collide with a user's own frontmatter.
 `updated`, `created`, and `modified` belong to the user and to Basic Memory's
 timestamps; provenance never writes them.
+
+Upstream `created_by` and `updated_by` (see `note_authorship`) name the person or
+agent when a runtime authenticated one. A local install supplies no author, so
+those keys stay ordinary frontmatter. The `bm_*` keys name the source app, which
+that record does not, and this module never writes `created_by` or `updated_by`.
 """
 
 import re
