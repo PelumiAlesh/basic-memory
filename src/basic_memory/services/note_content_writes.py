@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from basic_memory.file_utils import ParseError, has_frontmatter, parse_frontmatter
 
 from basic_memory.indexing.accepted_note_mutation_runner import (
+    ACCEPTED_NOTE_DELETE_SOURCE,
+    AcceptedNoteBaseChecksumConflict,
     AcceptedNoteCreateMutation,
     AcceptedNoteDeleteMutation,
     AcceptedNoteEditMutation,
@@ -57,11 +59,14 @@ from basic_memory.services.note_write_outcomes import (
     TargetMoved,
     Locked,
     Rejected,
+    RevisionConflict,
     NoteLocation,
     WriteOutcome,
 )
 
 AcceptedNoteChange = RuntimeAcceptedNoteChange[RuntimeNoteContentResponsePayload]
+# The dataclass uses slots, so its default lives on instances, not the class.
+STALE_BASE_CHECKSUM_MESSAGE = AcceptedNoteBaseChecksumConflict(db_checksum=None).message
 
 
 class NoteContentMutationFreshener(Protocol):
@@ -75,7 +80,7 @@ class NoteContentMutationFreshener(Protocol):
     ) -> None: ...
 
 
-type NoteContentMutationKind = Literal["create", "update", "edit", "move"]
+type NoteContentMutationKind = Literal["create", "update", "edit", "move", "delete"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +91,9 @@ class NoteContentMutationActorContext:
     source: str
     actor_kind: str | None = None
     actor_name: str | None = None
+    # Display name stamped into created_by/updated_by frontmatter. Routes never
+    # set it; only a resolver that authenticated the caller can supply it.
+    author: str | None = None
 
 
 class NoteContentMutationActorResolver(Protocol):
@@ -137,12 +145,14 @@ def accepted_note_mutation_actor(
     user_profile_id: UUID | None,
     actor_kind: str | None,
     actor_name: str | None,
+    author: str | None = None,
 ) -> AcceptedNoteMutationActor:
     """Build the typed accepted-note actor passed to core mutation runners."""
     return AcceptedNoteMutationActor(
         user_profile_id=user_profile_id,
         kind=actor_kind,
         name=actor_name,
+        author=author,
     )
 
 
@@ -357,12 +367,18 @@ class NoteContentMutationService:
         permalink_candidates: Sequence[str],
         user_profile_id: UUID | None,
         source: str,
+        expected_checksum: str | None = None,
     ) -> WriteOutcome:
         """Create at a path or replace its current owner, without search resolution.
 
         Retained exact permalinks only identify a moved target when the requested
         path has no owner. Rejections leave the transaction before becoming values,
         so the existing rollback, cache invalidation, and publication rules still apply.
+
+        ``expected_checksum`` makes a replacement conditional on the accepted
+        revision the caller read. It is checked inside the update transaction, so
+        a write that lands after the caller's read wins and this one reports a
+        revision conflict instead of replacing it.
         """
         target: NoteLocation | None = None
         try:
@@ -417,6 +433,10 @@ class NoteContentMutationService:
                                     moved.permalink,
                                 )
                             )
+                    # The caller expected to replace a revision, but no note owns the
+                    # path. Creating one would resurrect a note deleted after the read.
+                    if expected_checksum is not None:
+                        return RevisionConflict(data.file_path, current_db_checksum=None)
 
             # Dispatch through the public operations so runtime overrides retain
             # their pre-acceptance work as well as the in-transaction hook.
@@ -429,13 +449,17 @@ class NoteContentMutationService:
                         source=source,
                     )
                     return Created(change)
-                case NoteLocation(external_id=entity_id):
+                case NoteLocation(external_id=entity_id, file_path=target_path):
+                    # A conditional replacement must still find the note at the path it
+                    # was addressed by; an unconditional one keeps Core's PUT semantics.
                     change = await self.update_note(
                         project_external_id=project_external_id,
                         entity_external_id=entity_id,
                         data=data,
                         user_profile_id=user_profile_id,
                         source=source,
+                        base_checksum=expected_checksum,
+                        base_file_path=target_path if expected_checksum is not None else None,
                     )
                     return Updated(change)
                 case _:
@@ -447,11 +471,18 @@ class NoteContentMutationService:
         except NoteContentMutationServiceError as error:
             # Legacy create/update adapters expose structured service errors.
             # Translate their recoverable outcomes once; preserve other refusals.
-            match error.status_code:
-                case 423:
+            match error.status_code, error.detail:
+                case 423, _:
                     return Locked(str(error.detail))
-                case 409 if target is None:
+                case 409, _ if target is None:
                     return AlreadyExists(data.file_path)
+                # update_note reports a moved base revision in the stable
+                # base-checksum wire shape (issue #1445); it is an expected outcome.
+                case 409, {
+                    "message": str() as message,
+                    "db_checksum": (str() | None) as current,
+                } if expected_checksum is not None and message == STALE_BASE_CHECKSUM_MESSAGE:
+                    return RevisionConflict(data.file_path, current_db_checksum=current)
                 case _:
                     raise
 
@@ -489,6 +520,7 @@ class NoteContentMutationService:
         base_checksum: str | None = None,
         actor_kind: str | None = None,
         actor_name: str | None = None,
+        base_file_path: str | None = None,
     ) -> AcceptedNoteChange:
         """PUT a markdown note by creating or replacing accepted DB state.
 
@@ -498,6 +530,10 @@ class NoteContentMutationService:
         moved, so the caller rebases instead of clobbering the newer write
         (issue #1445). It stays optional so callers without a synced base still
         write.
+
+        ``base_file_path`` pins the path the caller expected the note to own. A
+        move can leave the checksum unchanged, so a path-addressed replacement
+        passes both, and a moved note is rejected with the same structured 409.
         """
         try:
             return await self._accept_write(
@@ -508,6 +544,7 @@ class NoteContentMutationService:
                     actor=AcceptedNoteMutationActor(user_profile_id, actor_kind, actor_name),
                     source=source,
                     base_checksum=base_checksum,
+                    base_file_path=base_file_path,
                 )
             )
         except AcceptedNoteMutationRejected as error:
@@ -535,8 +572,11 @@ class NoteContentMutationService:
         )
         request = replace(
             request,
-            actor=AcceptedNoteMutationActor(
-                actor.user_profile_id, actor.actor_kind, actor.actor_name
+            actor=accepted_note_mutation_actor(
+                user_profile_id=actor.user_profile_id,
+                actor_kind=actor.actor_kind,
+                actor_name=actor.actor_name,
+                author=actor.author,
             ),
             source=actor.source,
         )
@@ -639,6 +679,7 @@ class NoteContentMutationService:
                                 user_profile_id=actor_context.user_profile_id,
                                 actor_kind=actor_context.actor_kind,
                                 actor_name=actor_context.actor_name,
+                                author=actor_context.author,
                             ),
                             source=actor_context.source,
                         ),
@@ -696,6 +737,7 @@ class NoteContentMutationService:
                                 user_profile_id=actor_context.user_profile_id,
                                 actor_kind=actor_context.actor_kind,
                                 actor_name=actor_context.actor_name,
+                                author=actor_context.author,
                             ),
                             source=actor_context.source,
                         ),
@@ -711,8 +753,25 @@ class NoteContentMutationService:
         *,
         project_external_id: str,
         entity_external_id: str,
+        user_profile_id: UUID | None = None,
+        source: str = ACCEPTED_NOTE_DELETE_SOURCE,
+        actor_kind: str | None = None,
+        actor_name: str | None = None,
     ) -> AcceptedNoteChange:
-        """DELETE the DB note and return the runtime follow-up change."""
+        """DELETE the DB note and return the runtime follow-up change.
+
+        The actor inputs default to an unidentified caller, so a delete with no
+        actor writes the same journal row it always has. The resolver sees
+        ``source`` like every other mutation, but the journal keeps recording
+        deletes under ``ACCEPTED_NOTE_DELETE_SOURCE``: only the actor is new here.
+        """
+        actor_context = self._resolve_actor(
+            "delete",
+            user_profile_id=user_profile_id,
+            source=source,
+            actor_kind=actor_kind,
+            actor_name=actor_name,
+        )
         freshening_may_have_published = False
         try:
             freshening_may_have_published = await self.freshen_existing_note_content(
@@ -729,6 +788,12 @@ class NoteContentMutationService:
                         request=AcceptedNoteDeleteMutation(
                             project_external_id=project_external_id,
                             entity_external_id=entity_external_id,
+                            actor=accepted_note_mutation_actor(
+                                user_profile_id=actor_context.user_profile_id,
+                                actor_kind=actor_context.actor_kind,
+                                actor_name=actor_context.actor_name,
+                                author=actor_context.author,
+                            ),
                         ),
                         dependencies=self.mutation_dependencies,
                     )

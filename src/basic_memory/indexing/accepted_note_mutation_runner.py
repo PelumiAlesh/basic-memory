@@ -36,6 +36,7 @@ from basic_memory.markdown.note_lock import LOCKED_NOTE_MESSAGE, note_is_locked
 from basic_memory.repository import NoteContentVersionConflict
 from basic_memory.repository.note_file_vacate_repository import NoteFileVacateRepository
 from basic_memory.services.exceptions import EntityAlreadyExistsError
+from basic_memory.services.note_authorship import NoteAuthor, NoteAuthorship
 from basic_memory.runtime.note_content import (
     RuntimeAcceptedNoteChange,
     RuntimeAcceptedNoteWriteConflictKind,
@@ -141,6 +142,9 @@ class AcceptedNoteMutationActor:
     user_profile_id: AcceptedNoteMutationUserProfileId | None
     kind: RuntimeNoteActorKind | None = None
     name: RuntimeNoteActorName | None = None
+    # Display name stamped into created_by/updated_by frontmatter. Only the runtime
+    # boundary that authenticated the caller may set it; None stamps nothing.
+    author: NoteAuthor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,6 +169,9 @@ class AcceptedNoteUpdateMutation:
     source: RuntimeNoteChangeSource
     # db_checksum the caller last synced; None means no precondition (issue #1445).
     base_checksum: str | None = None
+    # file_path the caller expected the note to own. A move can keep the Markdown,
+    # and so the checksum, unchanged; only the path proves the caller's target.
+    base_file_path: str | None = None
     publish_graph_facts: bool = True
 
 
@@ -196,6 +203,9 @@ class AcceptedNoteDeleteMutation:
 
     project_external_id: ProjectExternalId
     entity_external_id: NoteExternalId
+    # None records the delete unattributed, as every delete was before actors
+    # reached this path; the journal source stays ACCEPTED_NOTE_DELETE_SOURCE.
+    actor: AcceptedNoteMutationActor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -683,7 +693,7 @@ async def run_accepted_note_delete(
         source=ACCEPTED_NOTE_DELETE_SOURCE,
         previous_file_path=None,
         note_content=note_content,
-        actor=None,
+        actor=request.actor,
         dependencies=dependencies,
     )
     return AcceptedNoteMutationResult(
@@ -732,6 +742,7 @@ async def _run_accepted_note_create(
         data,
         check_storage_exists=dependencies.verify_storage_absent_on_create,
         session=session,
+        authorship=NoteAuthorship.for_write(request.actor.author, current_markdown=None),
     )
     prepared_write = apply_accepted_note_graph_policy(
         prepared_write,
@@ -820,13 +831,23 @@ async def _run_accepted_note_update(
                 AcceptedNoteMutationRejectKind.unsupported_media_type,
                 "Only markdown note mutations are supported by the note-content path.",
             )
-        current_note_content = await load_required_accepted_note_content(
-            session,
-            project_id=project.id,
-            entity_id=entity.id,
-            dependencies=dependencies,
-            missing_kind=AcceptedNoteMutationRejectKind.conflict,
-        )
+        try:
+            current_note_content = await load_required_accepted_note_content(
+                session,
+                project_id=project.id,
+                entity_id=entity.id,
+                dependencies=dependencies,
+                missing_kind=AcceptedNoteMutationRejectKind.conflict,
+            )
+        except AcceptedNoteMutationRejected:
+            # Trigger: the caller pinned a revision, and the note's content row is
+            #   gone once its lock is held (a delete committed after the entity load).
+            # Why: that is the note the caller read no longer existing, the same
+            #   outcome as the entity itself being gone, not a backfill gap.
+            # Outcome: the structured stale-revision 409 with db_checksum None.
+            if request.base_checksum is not None or request.base_file_path is not None:
+                reject_stale_base_checksum(current_db_checksum=None)
+            raise
         reject_locked_note(current_note_content)
         await session.refresh(entity)
         if not runtime_content_type_is_markdown(entity):
@@ -834,6 +855,14 @@ async def _run_accepted_note_update(
                 AcceptedNoteMutationRejectKind.unsupported_media_type,
                 "Only markdown note mutations are supported by the note-content path.",
             )
+        # Trigger: the caller pinned the path it read, and the note has moved since.
+        # Why: a move can preserve the Markdown and its checksum, so the checksum
+        #   precondition alone would accept this PUT and move the note back to the
+        #   stale path, overwriting a note the caller never saw at its current home.
+        #   Checked before any path-sensitive preparation, on the refreshed entity.
+        # Outcome: the same structured stale-revision 409 the checksum check uses.
+        if request.base_file_path is not None and entity.file_path != request.base_file_path:
+            reject_stale_base_checksum(current_db_checksum=current_note_content.db_checksum)
 
     existing_file_path = entity.file_path if entity is not None else None
     vacated_source: tuple[RuntimeFilePath, RuntimeFileChecksum | None] | None = None
@@ -878,6 +907,7 @@ async def _run_accepted_note_update(
             data,
             check_storage_exists=dependencies.verify_storage_absent_on_create,
             session=session,
+            authorship=NoteAuthorship.for_write(request.actor.author, current_markdown=None),
         )
         entity = await create_accepted_pending_entity(
             session,
@@ -957,6 +987,10 @@ async def _run_accepted_note_update(
                 data=data,
                 current_note_content=current_note_content,
                 user_profile_value=user_profile_value,
+                authorship=NoteAuthorship.for_write(
+                    request.actor.author,
+                    current_markdown=str(current_note_content.markdown_content),
+                ),
             )
         except (ParseError, ValueError) as error:
             reject_accepted_note_mutation(AcceptedNoteMutationRejectKind.bad_request, str(error))
@@ -1065,6 +1099,10 @@ async def _run_accepted_note_edit(
             replace_subsections=request.data.replace_subsections,
             user_profile_value=user_profile_value,
             metadata=request.data.metadata,
+            authorship=NoteAuthorship.for_write(
+                request.actor.author,
+                current_markdown=str(current_note_content.markdown_content),
+            ),
         )
     except (ParseError, ValueError) as error:
         reject_accepted_note_mutation(AcceptedNoteMutationRejectKind.bad_request, str(error))
@@ -1392,6 +1430,7 @@ async def prepare_create_or_reject(
     *,
     check_storage_exists: bool,
     session: AsyncSession,
+    authorship: NoteAuthorship | None,
 ) -> AcceptedPreparedNoteWrite:
     """Prepare a new accepted note or raise a typed mutation rejection."""
     try:
@@ -1420,6 +1459,7 @@ async def prepare_create_or_reject(
             # binary resources, which are valid alongside Markdown notes.
             skip_conflict_check=True,
             session=session,
+            authorship=authorship,
         )
     except EntityAlreadyExistsError as error:
         # PUT-as-create over an unindexed on-disk file (local source-of-truth

@@ -1,8 +1,9 @@
 """Move note tool for Basic Memory MCP server."""
 
-from pathlib import Path, PureWindowsPath
+import json
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from textwrap import dedent
-from typing import Any, Annotated, Optional, Literal
+from typing import Any, Annotated, NoReturn, Optional, Literal
 
 from loguru import logger
 from fastmcp import Context
@@ -13,11 +14,13 @@ from basic_memory.config import ConfigManager
 from basic_memory.mcp.write_verification import verify_note_move
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.project_context import get_project_client, resolve_project_and_path
-from basic_memory.shared_memory.write_safety import snapshot_local_note
+from basic_memory.schemas.directory import MAX_DIRECTORY_PAGE_SIZE
 from basic_memory.schemas.project_info import ProjectItem
+from basic_memory.shared_memory.write_safety import snapshot_local_note
 from basic_memory.utils import (
     generate_permalink,
     normalize_project_reference,
+    resolve_directory_casing,
     validate_project_path,
 )
 from basic_memory.workspace_context import current_workspace_permalink_context
@@ -50,46 +53,98 @@ def _directory_path_for_move(
 
 
 async def _detect_cross_project_move_attempt(
-    client, identifier: str, destination_path: str, current_project: str
+    client, identifier: str, destination_path: str, active_project: ProjectItem
 ) -> Optional[str]:
     """Detect potential cross-project move attempts and return guidance.
 
+    Applies to file and directory moves alike, so both reach the same verdict for the
+    same destination (#1607).
+
     Args:
         client: The AsyncClient instance
-        identifier: The note identifier being moved
-        destination_path: The destination path
-        current_project: The current active project
+        identifier: The note or directory identifier being moved
+        destination_path: The destination path or folder
+        active_project: The project the move runs in
 
     Returns:
         Error message with guidance if cross-project move is detected, None otherwise
     """
     try:
         # Import here to avoid circular import
-        from basic_memory.mcp.clients import ProjectClient
+        from basic_memory.mcp.clients import DirectoryClient, ProjectClient
 
         # Use typed ProjectClient for API calls
         project_client = ProjectClient(client)
         project_list = await project_client.list_projects()
-        project_names = [p.name.lower() for p in project_list.projects]
 
-        dest_lower = destination_path.lower()
-        path_parts = [part for part in dest_lower.split("/") if part]
+        path_parts = [
+            part for part in PureWindowsPath(destination_path).as_posix().split("/") if part
+        ]
+        if not path_parts:
+            return None
+        leading_folder = path_parts[0]
 
         # --- Detection 1: leading segment is a known project name ---
         # Trigger: the first path segment matches a different project's name.
         # Why: a routing-style destination like "other-project/file.md" expresses an
         #      intent to move into another project, which move_note cannot do — it
         #      would silently create a same-project nested folder instead.
-        # Outcome: reject with cross-project guidance rather than fake success.
-        if path_parts:
-            leading = path_parts[0]
-            if leading in project_names and leading != current_project.lower():
-                matching_project = next(
-                    p.name for p in project_list.projects if p.name.lower() == leading
+        # Outcome: candidate for rejection, unless the folder is already local (below).
+        # Projects are addressed by name or by permalink ("Other Project" is
+        # "other-project"), so compare the generated permalinks too. A lone segment
+        # with an extension is a root filename, not a folder: generate_permalink
+        # would strip ".md" and turn "other-project.md" into a project prefix.
+        is_root_filename = len(path_parts) == 1 and bool(PurePosixPath(leading_folder).suffix)
+        leading_permalink = None if is_root_filename else generate_permalink(leading_folder)
+        matching_project = next(
+            (
+                p.name
+                for p in project_list.projects
+                if (
+                    p.name.lower() == leading_folder.lower()
+                    or generate_permalink(p.name) == leading_permalink
                 )
-                return _format_cross_project_error_response(
-                    identifier, destination_path, current_project, matching_project
+                and p.name.lower() != active_project.name.lower()
+            ),
+            None,
+        )
+        if matching_project is None:
+            return None
+
+        # Trigger: the leading folder already holds content in the active project.
+        # Why: a knowledge base organised by domain routinely has folders named after
+        #      sibling projects; an existing local folder is evidence of local intent,
+        #      and rejecting it left `git mv` as the only way in (#1607).
+        # Outcome: the move proceeds as an ordinary same-project move.
+        # Trigger: the folder lookup itself fails after a project name matched.
+        # Why: the name match already signals routing intent; allowing the move
+        #      unverified is the silent misroute this guard exists to prevent.
+        # Outcome: keep the cross-project rejection.
+        # The server resolves a destination folder to an existing folder's casing
+        # (#1326), so "schemas/" lands in "Schemas/"; resolve the same way here.
+        try:
+            directory_client = DirectoryClient(client, active_project.external_id)
+            root_folders: list[str] = []
+            page = 1
+            while True:
+                listing = await directory_client.list(
+                    "/", depth=1, page=page, page_size=MAX_DIRECTORY_PAGE_SIZE
                 )
+                root_folders.extend(node.name for node in listing.nodes if node.type == "directory")
+                # The default listing orders folders before files, so the first page
+                # holding a file has already yielded every root folder.
+                if not listing.has_more or any(node.type != "directory" for node in listing.nodes):
+                    break
+                page += 1
+        except Exception as e:
+            logger.debug(f"Could not verify local folder {leading_folder!r}: {e}")
+        else:
+            if resolve_directory_casing(leading_folder, root_folders) in root_folders:
+                return None
+
+        return _format_cross_project_error_response(
+            identifier, destination_path, active_project.name, matching_project
+        )
 
         # NOTE: a "<seg>/projects/<seg>/..." structural heuristic was removed here.
         # Why: matching any destination whose 2nd segment is literally "projects" is
@@ -132,7 +187,7 @@ def _format_cross_project_error_response(
         read_note("{identifier}")
         
         # 2. Create the note in the target project
-        write_note("Note Title", "content from step 1", "target-folder", project="{target_project}")
+        write_note(title="Note Title", content="content from step 1", directory="target-folder", project="{target_project}")
 
         # 3. Delete the original note if desired
         delete_note("{identifier}", project="{current_project}")
@@ -142,12 +197,21 @@ def _format_cross_project_error_response(
         ### Alternative: Stay in current project
         If you want to move the note within the **{current_project}** project only:
         ```
-        move_note("{identifier}", "new-folder/new-name.md")
+        move_note(identifier="{identifier}", destination_path="new-folder/new-name.md")
         ```
 
         ## Available projects:
         Use `list_memory_projects()` to see all available projects.
         """).strip()
+
+
+def _raise_move_failure(output_format: str, payload: dict[str, Any], text: str) -> NoReturn:
+    """Report a failed move as a tool error, keeping the guidance for the caller.
+
+    A returned "Move Failed" string reads as success to MCP clients; raising makes
+    the result an error (isError) while the message still carries the same help.
+    """
+    raise ToolError(json.dumps(payload) if output_format == "json" else text)
 
 
 def _format_move_error_response(error_message: str, identifier: str, destination_path: str) -> str:
@@ -182,7 +246,7 @@ def _format_move_error_response(error_message: str, identifier: str, destination
             search_notes("{identifier}")
 
             # Then use the exact identifier from search results:
-            move_note("correct-identifier-here", "{destination_path}")
+            move_note(identifier="correct-identifier-here", destination_path="{destination_path}")
             ```
             """).strip()
 
@@ -203,10 +267,10 @@ Cannot move '{identifier}' to '{destination_path}' because a file already exists
 ## Try these alternatives:
 ```
 # Option 1: Add timestamp to make unique
-move_note("{identifier}", "{destination_path.rsplit(".", 1)[0] if "." in destination_path else destination_path}-backup.md")
+move_note(identifier="{identifier}", destination_path="{destination_path.rsplit(".", 1)[0] if "." in destination_path else destination_path}-backup.md")
 
 # Option 2: Use archive folder  
-move_note("{identifier}", "archive/{destination_path}")
+move_note(identifier="{identifier}", destination_path="archive/{destination_path}")
 
 # Option 3: Check what's at destination first
 read_note("{destination_path}")
@@ -231,7 +295,7 @@ The destination path '{destination_path}' is not valid: {error_message}
 
 ## Try again with:
 ```
-move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
+move_note(identifier="{identifier}", destination_path="notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
 ```"""
 
     # Permission/access errors
@@ -304,7 +368,7 @@ A system error occurred while moving '{identifier}': {error_message}
 content = read_note("{identifier}")
 
 # Create new note at desired location  
-write_note("New Note Title", content, "{destination_path.split("/")[0] if "/" in destination_path else "notes"}")
+write_note(title="New Note Title", content=content, directory="{destination_path.split("/")[0] if "/" in destination_path else "notes"}")
 
 # Then delete original if successful
 delete_note("{identifier}")
@@ -314,7 +378,7 @@ delete_note("{identifier}")
     return (  # pragma: no cover
         f"""# Move Failed
 
-Error moving '{identifier}' to '{destination_path}': {error_message}  # pragma: no cover
+Error moving '{identifier}' to '{destination_path}': {error_message}
 
 ## General troubleshooting:
 1. **Verify the note exists**: `read_note("{identifier}")` or `search_notes("{identifier}")`
@@ -328,7 +392,7 @@ Error moving '{identifier}' to '{destination_path}': {error_message}  # pragma: 
 read_note("{identifier}")
 
 # 2. Try a simple destination first
-move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
+move_note(identifier="{identifier}", destination_path="notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
 
 # 3. If that works, then try your original destination
 ```
@@ -340,7 +404,7 @@ If moving continues to fail, you can copy the content manually:
 content = read_note("{identifier}")
 
 # Create new note
-write_note("Title", content, "target-folder") 
+write_note(title="Title", content=content, directory="target-folder") 
 
 # Delete original once confirmed
 delete_note("{identifier}")
@@ -350,7 +414,15 @@ delete_note("{identifier}")
 
 @mcp.tool(
     title="Move Note",
-    description="Move a note or directory to a new location, updating database and maintaining links.",
+    description=(
+        "Move a note, or a whole directory with is_directory=true, to a new path within the "
+        "same project; cross-project moves are refused. For a file, give either "
+        "`destination_path` (project-relative, with the same file extension as the source, "
+        'e.g. "archive/note.md") or `destination_folder` (keeps the filename). The file '
+        "moves on disk and its index entry, observations, and relations move with it. The "
+        "permalink stays the same unless the server's update_permalinks_on_move setting is "
+        "on, so links that use it keep resolving; other notes' text is not rewritten."
+    ),
     tags={"notes"},
     annotations={
         "title": "Move Note",
@@ -411,8 +483,8 @@ async def move_note(
         project_id: Project external_id (UUID). Prefer this over `project` when known —
                 it routes to the exact project regardless of name collisions across cloud
                 workspaces. Takes precedence over `project`. Get from list_memory_projects().
-        output_format: "text" returns existing markdown guidance/success text. "json"
-            returns machine-readable move metadata.
+        output_format: "text" returns a markdown success or failure message. "json"
+            returns machine-readable move metadata, with an error code on failure.
         context: Optional FastMCP context for performance caching.
 
     Returns:
@@ -421,36 +493,38 @@ async def move_note(
 
     Examples:
         # Move a single note to new folder (exact title match)
-        move_note("My Note", "work/notes/my-note.md")
+        move_note(identifier="My Note", destination_path="work/notes/my-note.md")
 
         # Move by exact permalink
-        move_note("my-note-permalink", "archive/old-notes/my-note.md")
+        move_note(identifier="my-note-permalink", destination_path="archive/old-notes/my-note.md")
 
         # Move note to archive folder (filename preserved automatically)
         move_note("my-note", destination_folder="archive")
 
         # Move with complex path structure
-        move_note("experiments/ml-results", "archive/2025/ml-experiments.md")
+        move_note(identifier="experiments/ml-results", destination_path="archive/2025/ml-experiments.md")
 
         # Explicit project specification
-        move_note("My Note", "work/notes/my-note.md", project="work-project")
+        move_note(identifier="My Note", destination_path="work/notes/my-note.md", project="work-project")
 
         # Move entire directory
-        move_note("docs", "archive/docs", is_directory=True)
+        move_note(identifier="docs", destination_path="archive/docs", is_directory=True)
 
         # Move nested directory
-        move_note("projects/2024", "archive/projects/2024", is_directory=True)
+        move_note(identifier="projects/2024", destination_path="archive/projects/2024", is_directory=True)
 
         # If uncertain about identifier, search first:
         # search_notes("my note")  # Find available notes
-        # move_note("docs/my-note-2025", "archive/my-note.md")  # Use exact result
+        # move_note(identifier="docs/my-note-2025", destination_path="archive/my-note.md")  # Use exact result
 
     Raises:
         ToolError: If project doesn't exist, identifier is not found, or destination_path is invalid
 
     Note:
         This operation moves notes within the specified project only. Moving notes
-        between different projects is not currently supported.
+        between different projects is not currently supported. For file and
+        directory moves alike, a destination whose first folder is named after
+        another project is rejected, unless that folder already exists in this project.
 
     The move operation:
     - Updates the entity's file_path in the database
@@ -550,7 +624,7 @@ The destination path '{destination_path}' is not allowed - paths must stay withi
 
 ## Try again with a safe path:
 ```
-move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
+move_note(identifier="{identifier}", destination_path="notes/{destination_path.split("/")[-1] if "/" in destination_path else destination_path}")
 ```"""
 
         # Resolve every source before branching so file and directory mutations share
@@ -588,6 +662,34 @@ move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in dest
                 identifier, destination_path, active_project.name, source_project.name
             )
 
+        # --- Cross-boundary intent guard (file and directory moves) ---
+        # Trigger: every move, before branching on is_directory.
+        # Why: the guard used to run only on the file path, so a directory move accepted
+        #      the same destination a file move refused (#1607). It checks the leading
+        #      segment only, which destination_folder already carries — so it no longer
+        #      needs to wait for folder resolution (#881 Gap 3).
+        # Outcome: a cross-project routing destination is rejected with guidance instead
+        #          of silently degrading to a same-project nested folder.
+        guarded_destination = destination_folder or destination_path
+        cross_project_error = await _detect_cross_project_move_attempt(
+            client, identifier, guarded_destination, active_project
+        )
+        if cross_project_error:
+            logger.info(
+                f"Detected cross-project move attempt: {identifier} -> {guarded_destination}"
+            )
+            if output_format == "json":
+                return {
+                    "moved": False,
+                    "title": None,
+                    "permalink": None,
+                    "file_path": None,
+                    "source": identifier,
+                    "destination": guarded_destination,
+                    "error": "CROSS_PROJECT_MOVE_NOT_SUPPORTED",
+                }
+            return cross_project_error
+
         # Handle directory moves
         if is_directory:
             try:
@@ -601,75 +703,13 @@ move_note("{identifier}", "notes/{destination_path.split("/")[-1] if "/" in dest
                     else resolved_identifier
                 )
                 result = await knowledge_client.move_directory(source_directory, destination_path)
-                if output_format == "json":
-                    return {
-                        "moved": result.total_files > 0 and result.failed_moves == 0,
-                        "title": None,
-                        "permalink": None,
-                        "file_path": None,
-                        "source": identifier,
-                        "destination": destination_path,
-                        "is_directory": True,
-                        "total_files": result.total_files,
-                        "successful_moves": result.successful_moves,
-                        "failed_moves": result.failed_moves,
-                        **(
-                            {"error": "Directory not found or empty: no files matched"}
-                            if result.total_files == 0
-                            else {}
-                        ),
-                    }
-
-                if result.total_files == 0:
-                    return f"""# Directory Move Failed - No Files Found
-
-No files found for source directory `{identifier}`.
-Total files: 0.
-
-<!-- Project: {active_project.name} -->"""
-
-                # Build success message for directory move
-                result_lines = [
-                    "# Directory Moved Successfully",
-                    "",
-                    f"**Source:** `{identifier}`",
-                    f"**Destination:** `{destination_path}`",
-                    "",
-                    "## Summary",
-                    f"- Total files: {result.total_files}",
-                    f"- Successfully moved: {result.successful_moves}",
-                    f"- Failed: {result.failed_moves}",
-                ]
-
-                if result.moved_files:
-                    result_lines.extend(["", "## Moved Files"])
-                    for file_path in result.moved_files[:10]:  # Show first 10
-                        result_lines.append(f"- `{file_path}`")
-                    if len(result.moved_files) > 10:
-                        result_lines.append(f"- ... and {len(result.moved_files) - 10} more")
-
-                if result.errors:  # pragma: no cover
-                    result_lines.extend(["", "## Errors"])
-                    for error in result.errors[:5]:  # Show first 5 errors
-                        result_lines.append(f"- `{error.path}`: {error.error}")
-                    if len(result.errors) > 5:
-                        result_lines.append(f"- ... and {len(result.errors) - 5} more errors")
-
-                result_lines.extend(["", f"<!-- Project: {active_project.name} -->"])
-
-                logger.info(
-                    f"Directory move completed: {identifier} -> {destination_path}, "
-                    f"moved={result.successful_moves}, failed={result.failed_moves}"
-                )
-
-                return "\n".join(result_lines)
-
             except Exception as e:  # pragma: no cover
                 logger.error(
                     f"Directory move failed for '{identifier}' to '{destination_path}': {e}"
                 )
-                if output_format == "json":
-                    return {
+                _raise_move_failure(
+                    output_format,
+                    {
                         "moved": False,
                         "title": None,
                         "permalink": None,
@@ -678,8 +718,8 @@ Total files: 0.
                         "destination": destination_path,
                         "is_directory": True,
                         "error": str(e),
-                    }
-                return f"""# Directory Move Failed
+                    },
+                    f"""# Directory Move Failed
 
 Error moving directory '{identifier}' to '{destination_path}': {str(e)}
 
@@ -694,8 +734,83 @@ Error moving directory '{identifier}' to '{destination_path}': {str(e)}
 list_directory("{identifier}")
 
 # Then move individual files
-move_note("path/to/file.md", "{destination_path}/file.md")
-```"""
+move_note(identifier="path/to/file.md", destination_path="{destination_path}/file.md")
+```""",
+                )
+
+            # --- Directory move outcome ---
+            # move_directory reports an empty match or per-file failures in its result
+            # rather than raising. Both are failures of the requested move, so they are
+            # tool errors too; a partial move keeps its full summary so the caller sees
+            # which files already moved before retrying.
+            response: dict[str, Any] = {
+                "moved": result.total_files > 0 and result.failed_moves == 0,
+                "title": None,
+                "permalink": None,
+                "file_path": None,
+                "source": identifier,
+                "destination": destination_path,
+                "is_directory": True,
+                "total_files": result.total_files,
+                "successful_moves": result.successful_moves,
+                "failed_moves": result.failed_moves,
+            }
+
+            if result.total_files == 0:
+                response["error"] = "Directory not found or empty: no files matched"
+                _raise_move_failure(
+                    output_format,
+                    response,
+                    f"""# Directory Move Failed - No Files Found
+
+No files found for source directory `{identifier}`.
+Total files: 0.
+
+<!-- Project: {active_project.name} -->""",
+                )
+
+            incomplete = result.failed_moves > 0
+            result_lines = [
+                "# Directory Move Incomplete" if incomplete else "# Directory Moved Successfully",
+                "",
+                f"**Source:** `{identifier}`",
+                f"**Destination:** `{destination_path}`",
+                "",
+                "## Summary",
+                f"- Total files: {result.total_files}",
+                f"- Successfully moved: {result.successful_moves}",
+                f"- Failed: {result.failed_moves}",
+            ]
+
+            if result.moved_files:
+                result_lines.extend(["", "## Moved Files"])
+                for file_path in result.moved_files[:10]:  # Show first 10
+                    result_lines.append(f"- `{file_path}`")
+                if len(result.moved_files) > 10:
+                    result_lines.append(f"- ... and {len(result.moved_files) - 10} more")
+
+            if result.errors:
+                result_lines.extend(["", "## Errors"])
+                for error in result.errors[:5]:  # Show first 5 errors
+                    result_lines.append(f"- `{error.path}`: {error.error}")
+                if len(result.errors) > 5:
+                    result_lines.append(f"- ... and {len(result.errors) - 5} more errors")
+
+            result_lines.extend(["", f"<!-- Project: {active_project.name} -->"])
+
+            logger.info(
+                f"Directory move completed: {identifier} -> {destination_path}, "
+                f"moved={result.successful_moves}, failed={result.failed_moves}"
+            )
+
+            if incomplete:
+                response["error"] = (
+                    "Directory move incomplete: "
+                    f"{result.failed_moves} of {result.total_files} file(s) failed"
+                )
+                _raise_move_failure(output_format, response, "\n".join(result_lines))
+
+            return response if output_format == "json" else "\n".join(result_lines)
 
         # Resolve once and reuse the entity ID across extension validation and move.
         source_ext = "md"  # Default to .md if we can't determine source extension
@@ -722,8 +837,9 @@ move_note("path/to/file.md", "{destination_path}/file.md")
             #      to extension defaults and failing later with a confusing message.
             # Outcome: move_note returns a user-facing not-found error immediately.
             logger.error(f"Move failed for '{identifier}' to '{destination_path}': {e}")
-            if output_format == "json":
-                return {
+            _raise_move_failure(
+                output_format,
+                {
                     "moved": False,
                     "title": None,
                     "permalink": None,
@@ -731,8 +847,9 @@ move_note("path/to/file.md", "{destination_path}/file.md")
                     "source": identifier,
                     "destination": destination_path,
                     "error": str(e),
-                }
-            return _format_move_error_response(str(e), identifier, destination_path)
+                },
+                _format_move_error_response(str(e), identifier, destination_path),
+            )
         except Exception as e:
             # If we can't fetch source metadata (e.g. get_entity or file_path parsing fails),
             # continue with extension defaults — the entity was at least resolved.
@@ -798,31 +915,6 @@ The destination folder '{destination_folder}' is not allowed - paths must stay w
 move_note("{identifier}", destination_folder="notes")
 ```"""
 
-        # --- Cross-boundary intent guard (file moves only) ---
-        # Trigger: destination_path now holds the real combined target, whether it came
-        #          from destination_path or was resolved from destination_folder above.
-        # Why: detection must run AFTER folder resolution — running it earlier (when a
-        #      caller used destination_folder) saw an empty destination_path and skipped
-        #      entirely (#881 Gap 3).
-        # Outcome: a cross-workspace/cross-project routing destination is rejected with
-        #          guidance instead of silently degrading to a same-project nested folder.
-        cross_project_error = await _detect_cross_project_move_attempt(
-            client, identifier, destination_path, active_project.name
-        )
-        if cross_project_error:
-            logger.info(f"Detected cross-project move attempt: {identifier} -> {destination_path}")
-            if output_format == "json":
-                return {
-                    "moved": False,
-                    "title": None,
-                    "permalink": None,
-                    "file_path": None,
-                    "source": identifier,
-                    "destination": destination_path,
-                    "error": "CROSS_PROJECT_MOVE_NOT_SUPPORTED",
-                }
-            return cross_project_error
-
         # Trigger: caller asks to move a note to its current normalized file path.
         # Why: the API treats this as a successful update, but no file actually moved.
         # Outcome: report an honest no-op failure so callers can choose a new path.
@@ -880,7 +972,7 @@ move_note("{identifier}", destination_folder="notes")
 
                 ## Try again with extension:
                 ```
-                move_note("{identifier}", "{destination_path}.{source_ext}")
+                move_note(identifier="{identifier}", destination_path="{destination_path}.{source_ext}")
                 ```
 
                 All examples in Basic Memory expect file extensions to be explicitly provided.
@@ -928,7 +1020,7 @@ move_note("{identifier}", destination_folder="notes")
 
                     ## Try again with matching extension:
                     ```
-                    move_note("{identifier}", "{destination_path.rsplit(".", 1)[0]}.{source_ext}")
+                    move_note(identifier="{identifier}", destination_path="{destination_path.rsplit(".", 1)[0]}.{source_ext}")
                     ```
                     """).strip()
 
@@ -996,7 +1088,7 @@ move_note("{identifier}", destination_folder="notes")
 
                     ```
                     read_note("{result.file_path}")
-                    write_note("Title", "content", "folder", project="target-project")
+                    write_note(title="Title", content="content", directory="folder", project="target-project")
                     delete_note("{result.file_path}", project="{active_project.name}")
                     ```
                     """).strip()
@@ -1050,8 +1142,9 @@ move_note("{identifier}", destination_folder="notes")
 
         except Exception as e:
             logger.error(f"Move failed for '{identifier}' to '{destination_path}': {e}")
-            if output_format == "json":
-                return {
+            _raise_move_failure(
+                output_format,
+                {
                     "moved": False,
                     "title": None,
                     "permalink": None,
@@ -1059,6 +1152,6 @@ move_note("{identifier}", destination_folder="notes")
                     "source": identifier,
                     "destination": destination_path,
                     "error": str(e),
-                }
-            # Return formatted error message for better user experience
-            return _format_move_error_response(str(e), identifier, destination_path)
+                },
+                _format_move_error_response(str(e), identifier, destination_path),
+            )

@@ -26,6 +26,7 @@ from basic_memory.schemas.v2.note_write import (
     NoteAlreadyExists,
     NoteTargetMoved,
     NoteLocked,
+    NoteRevisionConflict,
 )
 from basic_memory.schemas.search import (
     SearchItemType,
@@ -207,7 +208,13 @@ def _compose_workspace_project_route(
 
 @mcp.tool(
     title="Write Note",
-    description="Create a markdown note. If the note already exists, returns an error by default — pass overwrite=True to replace.",
+    description=(
+        "Create a markdown note. If the note already exists, returns an error by default "
+        "— pass overwrite=True to replace. directory is required. For incremental changes "
+        "to an existing note use edit_note. A new note's result may list similar existing "
+        "notes; that is advisory and does not block the write. Pass expected_checksum with "
+        "overwrite=True to replace the note only if it is still the revision you read."
+    ),
     tags={"notes"},
     annotations={
         "title": "Write Note",
@@ -232,6 +239,7 @@ async def write_note(
     note_type: str = "note",
     metadata: Annotated[dict[str, Any] | None, BeforeValidator(coerce_dict)] = None,
     overwrite: bool | None = None,
+    expected_checksum: str | None = None,
     output_format: Literal["text", "json"] = "text",
     context: Context | None = None,
 ) -> str | dict[str, Any]:
@@ -283,10 +291,10 @@ async def write_note(
                    Use forward slashes (/) as separators. Use "/" or "" to write to project root.
                    Examples: "notes", "projects/2025", "research/ml", "/" (root).
                    MCP accepts the aliases folder, dir, and path; the CLI flag is --folder.
-        project: Project name to write to. Optional - server will resolve using the
-                hierarchy above. Omitting both project and project_id writes to the
-                session's active project (the last one this session touched), and only
-                falls back to the configured default project when there is none — so
+        project: Project name to write to. Optional. Omitting both project and project_id
+                writes to the session's active project (the last one this session
+                touched), and only falls back to the configured default project when there
+                is none — so
                 after working in another project, pass project explicitly. Use
                 "workspace/project" to route to a project in a specific cloud workspace.
                 A bare name that exists in multiple workspaces resolves to the default
@@ -309,7 +317,12 @@ async def write_note(
                   beyond title/type/tags. Nested dicts are supported. Not available from the CLI.
         overwrite: If True, replace existing note on conflict. If False, error on conflict.
                    If None (default), consult write_note_overwrite_default config setting.
-        output_format: "text" returns the existing markdown summary. "json" returns
+        expected_checksum: Optional revision precondition for overwrite=True: the checksum
+                   of the note you read (from a JSON write_note or edit_note result). The
+                   note is replaced only while it is still that revision; otherwise the
+                   tool reports a revision conflict with the current checksum and changes
+                   nothing. Omit it to replace the note unconditionally.
+        output_format: "text" returns a markdown summary. "json" returns
                        machine-readable metadata; on conflict it returns action: "conflict"
                        with an error code instead of raising.
         context: Optional FastMCP context for performance caching.
@@ -353,6 +366,16 @@ async def write_note(
             overwrite=True
         )
 
+        # Overwrite only if nobody changed the note since you read it
+        write_note(
+            project="my-research",
+            title="Meeting Notes",
+            directory="meetings",
+            content="# Weekly Standup\\n\\n- [decision] Keep PostgreSQL #tech",
+            overwrite=True,
+            expected_checksum="<checksum from the previous JSON result>",
+        )
+
         # Create a schema note with custom frontmatter via metadata
         write_note(
             title="Person",
@@ -377,6 +400,9 @@ async def write_note(
     effective_overwrite = (
         overwrite if overwrite is not None else ConfigManager().config.write_note_overwrite_default
     )
+    # A create has no prior revision, so a checksum only conditions a replacement.
+    if expected_checksum is not None and not effective_overwrite:
+        raise ValueError("expected_checksum requires overwrite=True")
     project = _compose_workspace_project_route(
         workspace=workspace,
         project=project,
@@ -391,6 +417,7 @@ async def write_note(
         requested_project_id=project_id,
         note_type=note_type,
         overwrite=effective_overwrite,
+        conditional_overwrite=expected_checksum is not None,
         output_format=output_format,
     ):
         async with get_project_client(project, context=context, project_id=project_id) as (
@@ -462,7 +489,11 @@ async def write_note(
 
             # The API owns path identity and overwrite policy; expected outcomes stay
             # typed all the way here, so presentation never has to parse an HTTP error.
-            outcome = await knowledge_client.write_note(entity, overwrite=effective_overwrite)
+            outcome = await knowledge_client.write_note(
+                entity,
+                overwrite=effective_overwrite,
+                expected_checksum=expected_checksum,
+            )
             match outcome:
                 case NoteCreated(entity=result):
                     action = "Created"
@@ -497,6 +528,19 @@ async def write_note(
                     )
                 case NoteLocked(message=message):
                     raise ToolError(message)
+                case NoteRevisionConflict(db_checksum=current_checksum) as conflict:
+                    if output_format == "json":
+                        return {
+                            "title": title,
+                            "permalink": entity.permalink,
+                            "file_path": conflict.file_path if current_checksum else None,
+                            "checksum": current_checksum,
+                            "action": "conflict",
+                            "error": "NOTE_REVISION_CONFLICT",
+                        }
+                    return _format_revision_conflict(
+                        title, conflict.file_path, current_checksum, active_project.name
+                    )
                 case _:
                     assert_never(outcome)
             # --- Similar-note advisory ---
@@ -559,12 +603,20 @@ async def write_note(
                     for note in similar_notes
                 ]
 
+            # Report the accepted revision's checksum. It is recorded
+            # synchronously at accept time, and it is the value checksum-guarded
+            # edits compare base_checksum against. file_checksum is filled in
+            # later by deferred materialization and can drift if the file is
+            # edited outside Basic Memory, so it is not what a caller should
+            # echo back (#1586).
+            checksum = result.db_checksum
+
             summary = [
                 f"# {action} note",
                 f"project: {active_project.name}",
                 f"file_path: {result.file_path}",
                 f"permalink: {response_permalink}",
-                f"checksum: {result.file_checksum[:8] if result.file_checksum else 'unknown'}",
+                f"checksum: {checksum[:8] if checksum else 'unknown'}",
             ]
 
             # Count observations by category
@@ -627,7 +679,7 @@ async def write_note(
                     "title": result.title,
                     "permalink": response_permalink,
                     "file_path": result.file_path,
-                    "checksum": result.file_checksum,
+                    "checksum": checksum,
                     "action": action.lower(),
                     "similar_notes": [dataclasses.asdict(note) for note in similar_notes],
                 }
@@ -639,6 +691,31 @@ async def write_note(
 
             summary_result = "\n".join(summary)
             return add_project_metadata(summary_result, active_project.name)
+
+
+def _format_revision_conflict(
+    title: str, file_path: str, current_checksum: str | None, project_name: str
+) -> str:
+    """Explain a refused conditional overwrite and the ways forward."""
+    if current_checksum is None:
+        return textwrap.dedent(f"""\
+            # Error: Note revision conflict
+
+            **"{title}"** no longer exists at `{file_path}`, so nothing was replaced.
+            Read the project again before writing, or drop expected_checksum to create
+            a new note at this path.
+
+            Project: {project_name}""")
+    return textwrap.dedent(f"""\
+        # Error: Note revision conflict
+
+        **"{title}"** at `{file_path}` changed since you read it, so nothing was replaced.
+        Current checksum: `{current_checksum}`
+
+        Read the note again and retry with expected_checksum="{current_checksum}", or drop
+        expected_checksum to replace it unconditionally.
+
+        Project: {project_name}""")
 
 
 def _format_overwrite_error(title: str, permalink: str | None, project_name: str) -> str:
@@ -655,7 +732,7 @@ def _format_overwrite_error(title: str, permalink: str | None, project_name: str
         | Append content | `edit_note("{permalink}", operation="append", content="...")` |
         | Prepend content | `edit_note("{permalink}", operation="prepend", content="...")` |
         | Replace a section | `edit_note("{permalink}", operation="replace_section", section="...", content="...")` |
-        | Full replace | `write_note("{title}", ..., overwrite=True)` |
+        | Full replace | `write_note(title="{title}", content="...", directory="...", overwrite=True)` |
         | Inspect first | `read_note("{permalink}")` |
 
         Project: {project_name}""")

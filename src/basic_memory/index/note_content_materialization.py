@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Coroutine, Mapping
 from contextlib import nullcontext, suppress
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 from loguru import logger
@@ -30,6 +31,7 @@ from basic_memory.indexing.project_index_maintenance import (
     ProjectIndexMovedEntitySearchRefresher,
 )
 from basic_memory.runtime.cleanup import (
+    RuntimeGuardedFileDeleteOutcome,
     RuntimeNoteFileDeleteJobRequest,
     plan_note_file_delete_job_request,
 )
@@ -47,9 +49,11 @@ from basic_memory.runtime.note_content import (
     read_runtime_file_checksum,
 )
 from basic_memory.runtime.note_materialization import RuntimeFileMetadataSource
+from basic_memory.runtime.project_partition import RuntimeAcceptedProjectNoteChange
 from basic_memory.runtime.storage import RuntimeFileChecksum, RuntimeFilePath
 from basic_memory.models import Entity
 from basic_memory.repository import EntityRepository, NoteContentRepository
+from basic_memory.repository.project_repository import ProjectRepository
 from basic_memory.repository.note_file_vacate_repository import (
     NoteFileVacateRepository,
     RecoverableVacate,
@@ -277,6 +281,20 @@ async def recover_stuck_materializations(
                 entity_id=row.entity_id,
             )
             continue
+        # Trigger: the recovered write reached a terminal status other than conflict.
+        # Why: recovery rebuilds its request from note_content, so it carries no
+        #   journal position; without settling here, the accepted row stays
+        #   unmaterialized and the wiki projector reports partial forever (#1625).
+        # Outcome: every journal row of this note up to the recovered version settles.
+        if result.status is not RuntimeNoteMaterializationStatus.conflict:
+            async with db.scoped_session(session_maker) as session:
+                await ProjectRepository().mark_note_changes_materialized_through_version(
+                    session,
+                    project_id,
+                    row.entity_id,
+                    int(row.db_version),
+                    materialized_at=datetime.now(tz=UTC),
+                )
         if result.status is RuntimeNoteMaterializationStatus.written:
             written += 1
     return MaterializationRecoverySummary(
@@ -544,26 +562,27 @@ class LocalNoteContentStorage:
     async def delete_file(self, path: RuntimeFilePath) -> None:
         await self.file_service.delete_file(path)
 
-    async def delete_file_if_unchanged(
+    async def delete_file_if_matches(
         self,
         path: RuntimeFilePath,
         *,
         expected_checksum: RuntimeFileChecksum,
-    ) -> bool:
-        # Re-verify the checksum immediately before deleting so a replacement written into the
-        # freshness-read → delete gap is never removed (basic-memory-cloud#1618). Local has no
-        # atomic precondition; the race is negligible on a filesystem.
+    ) -> RuntimeGuardedFileDeleteOutcome:
+        # Verify the checksum immediately before deleting so a replacement written before the
+        # delete is never removed (basic-memory-cloud#1618). Local has no atomic precondition;
+        # the race is negligible on a filesystem.
         if not await self.file_service.exists(path):
-            return False
+            return RuntimeGuardedFileDeleteOutcome.missing
         try:
             actual_checksum = await self.compute_checksum(path)
         except FileNotFoundError:
-            # Disappearance after the final existence probe is another safe no-delete outcome.
-            return False
+            # Disappearance after the existence probe means the object is already gone.
+            return RuntimeGuardedFileDeleteOutcome.missing
+        # Local files carry a single content checksum, so exact equality identifies the version.
         if actual_checksum != expected_checksum:
-            return False
+            return RuntimeGuardedFileDeleteOutcome.changed
         await self.file_service.delete_file(path)
-        return True
+        return RuntimeGuardedFileDeleteOutcome.deleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -616,6 +635,28 @@ class InlineNoteFileDeleteEnqueuer:
             return
         await run_note_file_delete(
             request, storage=self.storage, vacate_clearer=self.vacate_clearer
+        )
+
+
+async def settle_local_project_change(
+    session_maker: async_sessionmaker[AsyncSession],
+    change: RuntimeAcceptedProjectNoteChange | None,
+) -> None:
+    """Record that an accepted journal row's file work has settled in local storage.
+
+    The wiki projector defers until every accepted change it replays is
+    materialized. Cloud stamps its journal rows from the materialization job; the
+    local runtime never did, so any project with an API write reported `partial`
+    forever (#1625).
+    """
+    if change is None:
+        return
+    async with db.scoped_session(session_maker) as session:
+        await ProjectRepository().mark_accepted_note_change_materialized(
+            session,
+            change.project_id,
+            change.partition_position,
+            materialized_at=datetime.now(tz=UTC),
         )
 
 
@@ -722,6 +763,16 @@ class LocalNoteContentMaterializationProvider:
                     ),
                     cleanup_enqueuer=cleanup_enqueuer,
                 )
+            # Trigger: materialization reached a terminal status.
+            # Why: written, stale and missing all mean the accepted bytes are no
+            #   longer waiting on this job (a stale one was superseded by a newer
+            #   accepted version). Only a conflict leaves the user's disk edit
+            #   unresolved, so it keeps the wiki projector behind (mirrors cloud).
+            # Outcome: the journal row stops blocking the wiki projection.
+            if result.status is not RuntimeNoteMaterializationStatus.conflict:
+                await settle_local_project_change(
+                    self.session_maker, accepted.materialization.project_change
+                )
             if result.status is not RuntimeNoteMaterializationStatus.written:
                 return replace(
                     accepted,
@@ -771,6 +822,8 @@ class LocalNoteContentMaterializationProvider:
             storage,
             vacate_clearer=RepositoryMoveVacateClearer(session_maker=self.session_maker),
         ).enqueue_note_file_delete(plan_note_file_delete_job_request(accepted.file_delete))
+        # The inline delete has run, so the accepted delete no longer waits on storage.
+        await settle_local_project_change(self.session_maker, accepted.file_delete.project_change)
 
         # Trigger: surviving notes still linked to the deleted target at commit time.
         # Why: their relation search rows carry the deleted entity's id and title, and

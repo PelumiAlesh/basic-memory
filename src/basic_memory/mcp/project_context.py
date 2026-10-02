@@ -71,6 +71,7 @@ from basic_memory.mcp.project_context_identifiers import (
 )
 from basic_memory.mcp.workspace_project_index import (
     WORKSPACE_PROJECT_INDEX_STATE_KEY as _WORKSPACE_PROJECT_INDEX_STATE_KEY,
+    FailedWorkspace,
     WorkspaceProjectEntry,
     WorkspaceProjectIndex,
     WorkspaceProjectLookupMiss,
@@ -87,6 +88,7 @@ from basic_memory.mcp.workspace_project_index import (
     set_cached_active_workspace as _set_cached_active_workspace,
     workspace_project_index_from_state as _workspace_project_index_from_state,
     workspace_project_index_to_state as _workspace_project_index_to_state,
+    workspace_not_loaded_message,
 )
 
 # Keep the original module's helper surface intact for callers and tests while
@@ -354,14 +356,8 @@ async def _resolve_workspace_route(
         else _split_project_permalink_prefix(rest, entries_by_permalink)
     )
     if claimed is None:
-        if any(
-            failed_workspace.tenant_id == workspace.tenant_id
-            for failed_workspace in index.failed_workspaces
-        ):
-            raise ValueError(
-                f"Projects for workspace '{workspace.name}' ({workspace.slug}) "
-                "could not be loaded. Retry after workspace discovery recovers."
-            )
+        if (failed := index.failure_for(workspace)) is not None:
+            raise ValueError(workspace_not_loaded_message(failed))
 
         # Trigger: first segment matches a workspace slug but nothing after it
         #   matches a project in that workspace.
@@ -515,7 +511,7 @@ async def _ensure_workspace_project_index(
         return_exceptions=True,
     )
     entries_list: list[WorkspaceProjectEntry] = []
-    failed_workspaces: list[WorkspaceInfo] = []
+    failed_workspaces: list[FailedWorkspace] = []
     successful_fetches = 0
     for workspace, result in zip(workspaces, fetched_results, strict=True):
         if isinstance(result, BaseException):
@@ -524,8 +520,11 @@ async def _ensure_workspace_project_index(
             # Trigger: one workspace project listing failed during a multi-workspace index.
             # Why: a transient or unauthorized tenant should not break qualified routing for
             #   healthy workspaces, but unqualified routing still needs to know the index is partial.
-            # Outcome: keep successful workspace entries and record the failed workspace.
-            failed_workspaces.append(workspace)
+            # Outcome: keep successful workspace entries and record the failed workspace,
+            #   with the server's reason so later errors can say what to do.
+            failed_workspaces.append(
+                FailedWorkspace(workspace=workspace, reason=str(result) or type(result).__name__)
+            )
             logger.warning(
                 f"Cloud project discovery failed for workspace {workspace.slug} "
                 f"({workspace.tenant_id}): {result}"
@@ -541,19 +540,17 @@ async def _ensure_workspace_project_index(
         successful_fetches += 1
         entries_list.extend(workspace_entries)
 
-    if failed_workspaces and successful_fetches == 0:
-        failed_labels = ", ".join(workspace.slug for workspace in failed_workspaces)
-        raise ValueError(
-            "Unable to discover projects in any accessible workspace. "
-            f"Failed workspaces: {failed_labels}"
-        )
-
     entries = tuple(entries_list)
     index = _build_workspace_project_index(
         workspaces,
         entries,
         failed_workspaces=tuple(failed_workspaces),
     )
+    if failed_workspaces and successful_fetches == 0:
+        raise ValueError(
+            "Unable to discover projects in any accessible workspace. "
+            f"Failed workspaces: {index.failure_summary}"
+        )
 
     if context:
         await context.set_state(
@@ -1906,7 +1903,7 @@ async def get_project_client(
         return
 
     # Step 3: Determine if cloud routing is needed
-    project_entry = config.projects.get(resolved_project)
+    project_entry = config.project_entry(resolved_project)
     project_mode = config.get_project_mode(resolved_project)
 
     # Trigger: identifier is a UUID (project_id) but local config keys by name only
@@ -1916,6 +1913,16 @@ async def get_project_client(
     #   discovery still happens when factory/explicit/credentials are present
     cloud_available = factory_mode or explicit_cloud_routing or has_cloud_credentials(config)
     if project_id and not cloud_available:
+        project_mode = ProjectMode.LOCAL
+
+    # Trigger: the name is not in local config and no cloud route is available.
+    # Why: get_project_mode treats unknown names as cloud, so a typo or a deleted
+    #   project on a local-only install failed with "no credentials found"
+    #   instead of naming the missing project (#1632, and man's manual project
+    #   in #1628).
+    # Outcome: the local API answers, and its "project not found" error lists the
+    #   projects that do exist.
+    if project_entry is None and not cloud_available:
         project_mode = ProjectMode.LOCAL
 
     # Trigger: project_id is a local external_id in a mixed local+cloud setup.

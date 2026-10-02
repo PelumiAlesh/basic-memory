@@ -56,7 +56,13 @@ class KnowledgeClient:
 
     # --- Entity CRUD Operations ---
 
-    async def write_note(self, note: Entity, *, overwrite: bool) -> WriteNoteResponse:
+    async def write_note(
+        self,
+        note: Entity,
+        *,
+        overwrite: bool,
+        expected_checksum: str | None = None,
+    ) -> WriteNoteResponse:
         """Write at an exact path and preserve the service's expected outcomes."""
         from basic_memory.mcp.tools.utils import call_post
 
@@ -68,21 +74,29 @@ class KnowledgeClient:
             response = await call_post(
                 self.http_client,
                 f"{self._base_path}/write",
-                json=WriteNoteRequest(note=note, overwrite=overwrite).model_dump(mode="json"),
+                json=WriteNoteRequest(
+                    note=note,
+                    overwrite=overwrite,
+                    expected_checksum=expected_checksum,
+                ).model_dump(mode="json"),
                 client_name="knowledge",
                 operation="write_note",
                 path_template="/v2/projects/{project_id}/knowledge/write",
             )
         return write_note_response_adapter.validate_json(response.content)
 
-    async def create_entity(self, entity_data: dict[str, Any]) -> EntityResponse:
+    async def create_entity(self, entity_data: dict[str, Any]) -> EntityResponseV2:
         """Create a new entity.
 
         Args:
             entity_data: Entity data including title, content, folder, etc.
 
         Returns:
-            EntityResponse with created entity details
+            EntityResponseV2 with created entity details. The endpoint's
+            response_model is EntityResponseV2 (it carries file_checksum /
+            db_checksum, not the legacy EntityResponse.checksum key), so the
+            response must be parsed as that type or those fields silently
+            default to None (#1586).
 
         Raises:
             ToolError: If the request fails
@@ -102,13 +116,13 @@ class KnowledgeClient:
                 operation="create_entity",
                 path_template="/v2/projects/{project_id}/knowledge/entities",
             )
-        return EntityResponse.model_validate(response.json())
+        return EntityResponseV2.model_validate(response.json())
 
     async def update_entity(
         self,
         entity_id: str,
         entity_data: dict[str, Any],
-    ) -> EntityResponse:
+    ) -> EntityResponseV2:
         """Update an existing entity (full replacement).
 
         Args:
@@ -116,7 +130,8 @@ class KnowledgeClient:
             entity_data: Complete entity data for replacement
 
         Returns:
-            EntityResponse with updated entity details
+            EntityResponseV2 with updated entity details. See create_entity
+            for why this must be EntityResponseV2, not EntityResponse (#1586).
 
         Raises:
             ToolError: If the request fails
@@ -136,7 +151,7 @@ class KnowledgeClient:
                 operation="update_entity",
                 path_template="/v2/projects/{project_id}/knowledge/entities/{entity_id}",
             )
-        return EntityResponse.model_validate(response.json())
+        return EntityResponseV2.model_validate(response.json())
 
     async def get_entity(
         self,
@@ -215,7 +230,7 @@ class KnowledgeClient:
         self,
         entity_id: str,
         patch_data: dict[str, Any],
-    ) -> EntityResponse:
+    ) -> EntityResponseV2:
         """Partially update an entity.
 
         Args:
@@ -223,7 +238,8 @@ class KnowledgeClient:
             patch_data: Partial entity data to update
 
         Returns:
-            EntityResponse with updated entity details
+            EntityResponseV2 with updated entity details. See create_entity
+            for why this must be EntityResponseV2, not EntityResponse (#1586).
 
         Raises:
             ToolError: If the request fails
@@ -243,7 +259,7 @@ class KnowledgeClient:
                 operation="patch_entity",
                 path_template="/v2/projects/{project_id}/knowledge/entities/{entity_id}",
             )
-        return EntityResponse.model_validate(response.json())
+        return EntityResponseV2.model_validate(response.json())
 
     async def delete_entity(self, entity_id: str) -> DeleteEntitiesResponse:
         """Delete an entity.

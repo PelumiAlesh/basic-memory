@@ -4,17 +4,19 @@ import json
 import os
 
 import logging
+import mimetypes
 import re
 import shlex
 import sys
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import override, Any, Protocol, Union, runtime_checkable, List, Optional
 
 from loguru import logger
 from unidecode import unidecode
 
 from basic_memory import telemetry
+from basic_memory.runtime.storage import RUNTIME_MARKDOWN_FILE_SUFFIXES
 
 
 def normalize_project_path(path: str) -> str:
@@ -324,6 +326,47 @@ def build_qualified_permalink_reference(
     return f"{normalized_project}/{normalized_path}"
 
 
+def own_project_remainder(
+    identifier: str,
+    project_permalink: Optional[str],
+    *,
+    workspace_permalink: Optional[str] = None,
+) -> Optional[str]:
+    """Return an identifier without this project's routing prefix, or None.
+
+    Routed identifiers arrive qualified as `<workspace>/<project>/…` on
+    workspace-scoped routes and `<project>/…` otherwise. Permalink candidates
+    strip those prefixes, but title and file-path lookups need the
+    project-relative remainder too: a title, or a resource whose permalink is
+    NULL, can only match there (#1626, #1629). Prefixes match by permalink, as
+    routing does, so `TEST-PROJECT/…` names `test-project`.
+    """
+    if not project_permalink:
+        return None
+    normalized_project = generate_permalink(project_permalink)
+    prefixes = [f"{normalized_project}/"]
+    if workspace_permalink:
+        prefixes.insert(0, f"{generate_permalink(workspace_permalink)}/{normalized_project}/")
+    normalized_identifier = generate_permalink(identifier)
+    for prefix in prefixes:
+        if normalized_identifier.startswith(prefix):
+            remainder = identifier.split("/", prefix.count("/"))[-1]
+            return remainder or None
+    return None
+
+
+def has_non_markdown_file_extension(path: str) -> bool:
+    """Return whether a path ends in a real file extension that is not Markdown.
+
+    Uses the same mimetypes test as generate_permalink, so version-like titles
+    (`Release 2.0`) are not mistaken for files.
+    """
+    suffix = PurePosixPath(path).suffix.casefold()
+    if not suffix or suffix in RUNTIME_MARKDOWN_FILE_SUFFIXES:
+        return False
+    return mimetypes.guess_type(path)[0] is not None
+
+
 def build_permalink_resolution_candidates(
     identifier: Union[Path, str, PathLike],
     project_permalink: Optional[str],
@@ -338,6 +381,18 @@ def build_permalink_resolution_candidates(
     all resolver callers share the same compatibility behavior.
     """
     exact_path = normalize_project_reference(str(identifier)).strip("/")
+
+    # Trigger: the identifier names a file with a real, non-Markdown extension
+    #   (`notes/foo.txt`, `assets/doc.pdf`).
+    # Why: resource entities carry no permalink, so dropping the extension could
+    #   only ever match the same-stem Markdown note, which is the wrong file (#1629).
+    # Outcome: the extension stays; callers reach the file through their exact
+    #   file-path lookups instead.
+    if has_non_markdown_file_extension(exact_path):
+        return list(
+            dict.fromkeys([exact_path, generate_permalink(exact_path, split_extension=False)])
+        )
+
     normalized_path = generate_permalink(exact_path).strip("/")
     normalized_project = generate_permalink(project_permalink) if project_permalink else None
     normalized_workspace = generate_permalink(workspace_permalink) if workspace_permalink else None
@@ -346,6 +401,19 @@ def build_permalink_resolution_candidates(
     def add_candidate(value: str | None) -> None:
         if value and value not in candidates:
             candidates.append(value)
+
+    def add_remainder(prefix: str, *, requalify_with: str | None = None) -> None:
+        # Trigger: a routing prefix is stripped to reach a shorter stored permalink.
+        # Why: a permalink set explicitly in frontmatter is stored verbatim, so
+        #   `ses_AbCd` never equals its slug `ses-ab-cd`; stripping only the
+        #   normalized path left such notes unreachable by memory:// URL (#1549).
+        # Outcome: each remainder is tried in the caller's own spelling first, then
+        #   as its slug, optionally under a legacy `project/` qualifier.
+        remainders = [normalized_path.removeprefix(f"{prefix}/")]
+        if exact_path.startswith(f"{prefix}/"):
+            remainders.insert(0, exact_path.removeprefix(f"{prefix}/"))
+        for remainder in remainders:
+            add_candidate(f"{requalify_with}/{remainder}" if requalify_with else remainder)
 
     add_candidate(exact_path)
     add_candidate(normalized_path)
@@ -370,9 +438,8 @@ def build_permalink_resolution_candidates(
             add_candidate(normalized_project)
         elif normalized_path.startswith(f"{workspace_project_prefix}/"):
             workspace_qualified = True
-            remainder = normalized_path.removeprefix(f"{workspace_project_prefix}/")
-            add_candidate(f"{normalized_project}/{remainder}")
-            add_candidate(remainder)
+            add_remainder(workspace_project_prefix, requalify_with=normalized_project)
+            add_remainder(workspace_project_prefix)
 
     if workspace_project_prefix and not include_project and not workspace_qualified:
         # Trigger: short lookup in a workspace where new canonical links omit project prefixes.
@@ -397,14 +464,13 @@ def build_permalink_resolution_candidates(
         if normalized_path == normalized_project:
             return candidates
         if normalized_path.startswith(f"{normalized_project}/"):
-            remainder = normalized_path.removeprefix(f"{normalized_project}/")
-            add_candidate(remainder)
+            add_remainder(normalized_project)
 
     if not include_project and normalized_path.startswith(f"{normalized_project}/"):
         # Trigger: caller supplied `project/path` while legacy short permalinks are stored.
         # Why: routing uses the project prefix, but strict lookup still needs the short row.
         # Outcome: try `path` after the exact project-qualified candidate.
-        add_candidate(normalized_path.removeprefix(f"{normalized_project}/"))
+        add_remainder(normalized_project)
 
     return candidates
 

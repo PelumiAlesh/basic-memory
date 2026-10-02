@@ -35,13 +35,13 @@ from basic_memory.mcp.project_context import (
 from basic_memory.mcp.server import mcp
 from basic_memory.mcp.tools.utils import _extract_response_data, _response_detail_text
 from basic_memory.schemas.base import Entity
-from basic_memory.schemas.response import EntityResponse
-from basic_memory.shared_memory.clients import request_client
-from basic_memory.shared_memory.provenance import provenance_stamp
+from basic_memory.schemas.v2.entity import EntityResponseV2
 from basic_memory.services.link_resolver import (
     detect_project_from_workspace_identifier_prefix,
     is_workspace_qualified_plain_identifier,
 )
+from basic_memory.shared_memory.clients import request_client
+from basic_memory.shared_memory.provenance import provenance_stamp
 from basic_memory.utils import coerce_dict, normalize_project_reference, validate_project_path
 
 EDIT_OPERATIONS = (
@@ -259,15 +259,15 @@ The note with identifier '{identifier}' could not be found. The `find_replace` a
 
 ## Suggestions to try:
 1. **Use append/prepend instead**: These operations will create the note automatically if it doesn't exist
-2. **Search for the note first**: Use `search_notes("{project or "project-name"}", "{identifier.split("/")[-1]}")` to find similar notes with exact identifiers
+2. **Search for the note first**: Use `search_notes(query="{identifier.split("/")[-1]}", project="{project or "project-name"}")` to find similar notes with exact identifiers
 3. **File exists on disk but is not indexed yet?**: edit_note indexes the file automatically when the identifier matches its path (e.g. 'folder/note' for 'folder/note.md'). If your identifier is a title or differs from the file path, run `basic-memory db reindex --search` or wait for the file watcher, then retry
 4. **Try different exact identifier formats**:
    - If you used a permalink like "folder/note-title", try the exact title: "{identifier.split("/")[-1].replace("-", " ").title()}"
    - If you used a title, try the exact permalink format: "{identifier.lower().replace(" ", "-")}"
-   - Use `read_note("{project or "project-name"}", "{identifier}")` first to verify the note exists and get the exact identifier
+   - Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` first to verify the note exists and get the exact identifier
 
 ## Alternative approach:
-Use `write_note("{project or "project-name"}", "title", "content", "folder")` to create the note first, then edit it."""
+Use `write_note(title="title", content="content", directory="folder", project="{project or "project-name"}")` to create the note first, then edit it."""
 
     # Find/replace specific errors
     if operation == "find_replace":
@@ -277,7 +277,7 @@ Use `write_note("{project or "project-name"}", "title", "content", "folder")` to
 The text '{find_text}' was not found in the note '{identifier}'.
 
 ## Suggestions to try:
-1. **Read the note first**: Use `read_note("{project or "project-name"}", "{identifier}")` to see the current content
+1. **Read the note first**: Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` to see the current content
 2. **Check for exact matches**: The search is case-sensitive and must match exactly
 3. **Try a broader search**: Search for just part of the text you want to replace
 4. **Use expected_replacements=0**: If you want to verify the text doesn't exist
@@ -298,13 +298,13 @@ The text '{find_text}' was not found in the note '{identifier}'.
 Expected {expected_replacements} occurrences of '{find_text}' but found {actual_count}.
 
 ## How to fix:
-1. **Read the note first**: Use `read_note("{project or "project-name"}", "{identifier}")` to see how many times '{find_text}' appears
+1. **Read the note first**: Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` to see how many times '{find_text}' appears
 2. **Update expected_replacements**: Set expected_replacements={actual_count} in your edit_note call
 3. **Be more specific**: If you only want to replace some occurrences, make your find_text more specific
 
 ## Example:
 ```
-edit_note("{project or "project-name"}", "{identifier}", "find_replace", "new_text", find_text="{find_text}", expected_replacements={actual_count})
+edit_note(identifier="{identifier}", operation="find_replace", content="new_text", project="{project or "project-name"}", find_text="{find_text}", expected_replacements={actual_count})
 ```"""
 
     # Section replacement errors
@@ -314,7 +314,7 @@ edit_note("{project or "project-name"}", "{identifier}", "find_replace", "new_te
 Multiple sections found with the same header in note '{identifier}'.
 
 ## How to fix:
-1. **Read the note first**: Use `read_note("{project or "project-name"}", "{identifier}")` to see the document structure
+1. **Read the note first**: Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` to see the document structure
 2. **Make headers unique**: Add more specific text to distinguish sections
 3. **Use append instead**: Add content at the end rather than replacing a specific section
 
@@ -330,14 +330,14 @@ Use `find_replace` to update specific text within the duplicate sections."""
 There was a problem with the edit request to note '{identifier}': {error_message}.
 
 ## Common causes and fixes:
-1. **Note doesn't exist**: Use `search_notes("{project or "project-name"}", "query")` or `read_note("{project or "project-name"}", "{identifier}")` to verify the note exists
+1. **Note doesn't exist**: Use `search_notes(query="query", project="{project or "project-name"}")` or `read_note(identifier="{identifier}", project="{project or "project-name"}")` to verify the note exists
 2. **Invalid identifier format**: Try different identifier formats (title vs permalink)
 3. **Empty or invalid content**: Check that your content is properly formatted
 4. **Server error**: Try the operation again, or use `read_note()` first to verify the note state
 
 ## Troubleshooting steps:
-1. Verify the note exists: `read_note("{project or "project-name"}", "{identifier}")`
-2. If not found, search for it: `search_notes("{project or "project-name"}", "{identifier.split("/")[-1]}")`
+1. Verify the note exists: `read_note(identifier="{identifier}", project="{project or "project-name"}")`
+2. If not found, search for it: `search_notes(query="{identifier.split("/")[-1]}", project="{project or "project-name"}")`
 3. Try again with the correct identifier from the search results"""
 
     # Fallback for other errors
@@ -346,20 +346,32 @@ There was a problem with the edit request to note '{identifier}': {error_message
 Error editing note '{identifier}': {error_message}
 
 ## General troubleshooting:
-1. **Verify the note exists**: Use `read_note("{project or "project-name"}", "{identifier}")` to check
+1. **Verify the note exists**: Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` to check
 2. **Check your parameters**: Ensure all required parameters are provided correctly
-3. **Read the note content first**: Use `read_note("{project or "project-name"}", "{identifier}")` to understand the current structure
+3. **Read the note content first**: Use `read_note(identifier="{identifier}", project="{project or "project-name"}")` to understand the current structure
 4. **Try a simpler operation**: Start with `append` if other operations fail
 
 ## Need help?
-- Use `search_notes("{project or "project-name"}", "query")` to find notes
-- Use `read_note("{project or "project-name"}", "identifier")` to examine content before editing
+- Use `search_notes(query="query", project="{project or "project-name"}")` to find notes
+- Use `read_note(identifier="identifier", project="{project or "project-name"}")` to examine content before editing
 - Check that identifiers, section headers, and find_text match exactly"""
 
 
 @mcp.tool(
     title="Edit Note",
-    description="Edit an existing markdown note using various operations like append, prepend, find_replace, replace_section, insert_before_section, or insert_after_section. Pass metadata to merge YAML frontmatter fields independent of the operation.",
+    description=(
+        "Edit a note in place. `operation` picks the edit: append or prepend `content` "
+        "(prepend lands after frontmatter; both create the note if it does not exist); "
+        "find_replace (replaces every exact, case-sensitive occurrence of `find_text`, and "
+        "writes nothing unless the count equals `expected_replacements`, default 1); "
+        "replace_section (replaces the content under the `section` heading, including its "
+        "subsections unless replace_subsections=false); insert_before_section / "
+        "insert_after_section (adds content beside the `section` heading). The heading must "
+        "match exactly and appear once; a heading without leading `#` is treated as `##`. A "
+        "missing or duplicate heading, or missing find_text, fails without writing. "
+        "`identifier` must resolve exactly; there is no fuzzy matching. Pass `metadata` to "
+        "merge frontmatter fields in the same call."
+    ),
     tags={"notes"},
     annotations={
         "title": "Edit Note",
@@ -439,9 +451,11 @@ async def edit_note(
         project_id: Project external_id (UUID). Prefer this over `project` when known —
                 it routes to the exact project regardless of name collisions across cloud
                 workspaces. Takes precedence over `project`. Get from list_memory_projects().
-        section: For replace_section operation - the markdown header to replace content under (e.g., "## Notes", "### Implementation")
-        find_text: For find_replace operation - the text to find and replace
-        expected_replacements: For find_replace operation - the expected number of replacements (validation will fail if actual doesn't match)
+        section: Heading for replace_section, insert_before_section, and
+            insert_after_section (e.g. "## Notes", "### Implementation"). Must match exactly.
+        find_text: For find_replace operation - the exact, case-sensitive text to replace
+        expected_replacements: For find_replace: required occurrence count of find_text
+            (default 1). A mismatch fails without writing.
         replace_subsections: For replace_section operation. Default (true): the section
             spans everything through the next heading of the same or higher level in the
             original note, so replacing "## Section" also replaces its "###" subsections —
@@ -454,8 +468,9 @@ async def edit_note(
             combined with any operation in the same call. `title` and `permalink` are
             ignored since those have their own dedicated handling; `type` is applied like
             any other frontmatter field. Key deletion is not supported.
-        output_format: "text" returns the existing markdown summary. "json" returns
-            machine-readable edit metadata.
+        output_format: "text" returns a markdown summary of the edit and the note's
+            resulting observations and relations. "json" returns machine-readable edit
+            metadata.
         context: Optional FastMCP context for performance caching.
 
     Returns:
@@ -464,46 +479,46 @@ async def edit_note(
 
     Examples:
         # Add new content to end of note
-        edit_note("my-project", "project-planning", "append", "\\n## New Requirements\\n- Feature X\\n- Feature Y")
+        edit_note(identifier="project-planning", operation="append", content="\\n## New Requirements\\n- Feature X\\n- Feature Y", project="my-project")
 
         # Add timestamp at beginning (frontmatter-aware)
-        edit_note("work-docs", "meeting-notes", "prepend", "## 2025-05-25 Update\\n- Progress update...\\n\\n")
+        edit_note(identifier="meeting-notes", operation="prepend", content="## 2025-05-25 Update\\n- Progress update...\\n\\n", project="work-docs")
 
         # Update version number (single occurrence)
-        edit_note("api-project", "config-spec", "find_replace", "v0.13.0", find_text="v0.12.0")
+        edit_note(identifier="config-spec", operation="find_replace", content="v0.13.0", project="api-project", find_text="v0.12.0")
 
         # Update version in multiple places with validation
-        edit_note("docs-project", "api-docs", "find_replace", "v2.1.0", find_text="v2.0.0", expected_replacements=3)
+        edit_note(identifier="api-docs", operation="find_replace", content="v2.1.0", project="docs-project", find_text="v2.0.0", expected_replacements=3)
 
         # Replace text that appears multiple times - validate count first
-        edit_note("team-docs", "docs/guide", "find_replace", "new-api", find_text="old-api", expected_replacements=5)
+        edit_note(identifier="docs/guide", operation="find_replace", content="new-api", project="team-docs", find_text="old-api", expected_replacements=5)
 
         # Replace implementation section (subsections under it are replaced too)
-        edit_note("specs", "api-spec", "replace_section", "New implementation approach...\\n", section="## Implementation")
+        edit_note(identifier="api-spec", operation="replace_section", content="New implementation approach...\\n", project="specs", section="## Implementation")
 
         # Replace only the intro text under a header, keeping its subsections
-        edit_note("specs", "api-spec", "replace_section", "New intro...\\n", section="## Implementation", replace_subsections=False)
+        edit_note(identifier="api-spec", operation="replace_section", content="New intro...\\n", project="specs", section="## Implementation", replace_subsections=False)
 
         # Replace subsection with more specific header
-        edit_note("docs", "docs/setup", "replace_section", "Updated install steps\\n", section="### Installation")
+        edit_note(identifier="docs/setup", operation="replace_section", content="Updated install steps\\n", project="docs", section="### Installation")
 
         # Using different identifier formats (must be exact matches)
-        edit_note("work-project", "Meeting Notes", "append", "\\n- Follow up on action items")  # exact title
-        edit_note("work-project", "docs/meeting-notes", "append", "\\n- Follow up tasks")       # exact permalink
+        edit_note(identifier="Meeting Notes", operation="append", content="\\n- Follow up on action items", project="work-project")  # exact title
+        edit_note(identifier="docs/meeting-notes", operation="append", content="\\n- Follow up tasks", project="work-project")       # exact permalink
 
         # If uncertain about identifier, search first:
-        # search_notes("work-project", "meeting")  # Find available notes
-        # edit_note("work-project", "docs/meeting-notes-2025", "append", "content")  # Use exact result
+        # search_notes(query="meeting", project="work-project")  # Find available notes
+        # edit_note(identifier="docs/meeting-notes-2025", operation="append", content="content", project="work-project")  # Use exact result
 
         # Add new section to document
-        edit_note("project-plan", "append", "\\n## Future Work\\nTBD - needs research\\n", project="planning")
+        edit_note(identifier="project-plan", operation="append", content="\\n## Future Work\\nTBD - needs research\\n", project="planning")
 
         # Update status across document (expecting exactly 2 occurrences)
-        edit_note("reports", "status-report", "find_replace", "In Progress", find_text="Not Started", expected_replacements=2)
+        edit_note(identifier="status-report", operation="find_replace", content="In Progress", project="reports", find_text="Not Started", expected_replacements=2)
 
         # Update frontmatter fields without touching the body (any operation works;
         # append with empty content is a no-op on the body itself)
-        edit_note("support", "tickets/2026-06-18-printer-offline", "append", "",
+        edit_note(identifier="tickets/2026-06-18-printer-offline", operation="append", content="", project="support",
                    metadata={"status": "resolved", "closed_at": "2026-06-18T10:42:00Z"})
 
     Raises:
@@ -661,7 +676,7 @@ async def edit_note(
 
                 file_created = False
                 entity_id = ""
-                result: EntityResponse | None = None
+                result: EntityResponseV2 | None = None
                 before_markdown: str | None = None
                 app_config = ConfigManager().config
 
@@ -801,13 +816,18 @@ async def edit_note(
                 # --- Format response ---
                 # result is always set: either by create_entity (auto-create) or patch_entity (edit)
                 assert result is not None
+                # Report the accepted revision's checksum: it is recorded at accept
+                # time and is what checksum-guarded edits compare base_checksum
+                # against. file_checksum arrives later from deferred materialization
+                # and can drift from it (#1586).
+                checksum = result.db_checksum
                 if file_created:
                     summary = [
                         f"# Created note ({operation})",
                         f"project: {active_project.name}",
                         f"file_path: {result.file_path}",
                         f"permalink: {result.permalink}",
-                        f"checksum: {result.checksum[:8] if result.checksum else 'unknown'}",
+                        f"checksum: {checksum[:8] if checksum else 'unknown'}",
                         "fileCreated: true",
                     ]
                     lines_added = len(content.split("\n"))
@@ -818,7 +838,7 @@ async def edit_note(
                         f"project: {active_project.name}",
                         f"file_path: {result.file_path}",
                         f"permalink: {result.permalink}",
-                        f"checksum: {result.checksum[:8] if result.checksum else 'unknown'}",
+                        f"checksum: {checksum[:8] if checksum else 'unknown'}",
                     ]
 
                     # Add operation-specific details
@@ -906,7 +926,7 @@ async def edit_note(
                         "title": result.title,
                         "permalink": result.permalink,
                         "file_path": result.file_path,
-                        "checksum": result.checksum,
+                        "checksum": checksum,
                         "operation": operation,
                         "fileCreated": file_created,
                     }

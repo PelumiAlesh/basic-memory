@@ -1469,3 +1469,81 @@ async def test_fuzzy_search_selects_first_result(link_resolver, project_prefix):
     assert result is not None
     # The best match for "Auth Serv" should be Auth Service
     assert result.permalink == f"{project_prefix}/components/auth-service"
+
+
+# ============================================================================
+# Own-project prefixed titles (#1626)
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_own_project_prefixed_title_resolves_exactly(link_resolver, project_prefix):
+    """A routed memory:// URL arrives as `<project>/<Title>`; the title must match exactly."""
+    for kwargs in ({"use_search": False}, {"strict": True}, {}):
+        result = await link_resolver.resolve_link(f"{project_prefix}/Service Config", **kwargs)
+        assert result is not None, kwargs
+        assert result.permalink == f"{project_prefix}/config/service-config"
+
+
+@pytest.mark.asyncio
+async def test_own_project_prefixed_miss_is_a_miss_without_search(link_resolver, project_prefix):
+    missing = f"{project_prefix}/zzq-nothing"
+    assert await link_resolver.resolve_link(missing, use_search=False) is None
+    assert await link_resolver.resolve_link(missing, strict=True) is None
+
+
+@pytest.mark.asyncio
+async def test_non_markdown_path_beats_same_stem_markdown_permalink(
+    entity_repository, session_maker, link_resolver, project_prefix
+):
+    """`components/core-service.txt` must not resolve to the Core Service note (#1629)."""
+    now = datetime.now(timezone.utc)
+    async with db.scoped_session(session_maker) as session:
+        await entity_repository.add(
+            session,
+            EntityModel(
+                title="core-service.txt",
+                note_type="file",
+                content_type="text/plain",
+                file_path="components/core-service.txt",
+                # Resource entities are indexed without a permalink.
+                permalink=None,
+                created_at=now,
+                updated_at=now,
+                project_id=entity_repository.project_id,
+            ),
+        )
+
+    for identifier in (
+        "components/core-service.txt",
+        f"{project_prefix}/components/core-service.txt",
+        # Routing accepts any spelling of the project prefix that normalizes to it.
+        f"{project_prefix.upper()}/components/core-service.txt",
+    ):
+        for kwargs in ({}, {"strict": True}):
+            result = await link_resolver.resolve_link(identifier, **kwargs)
+            assert result is not None, (identifier, kwargs)
+            assert result.file_path == "components/core-service.txt"
+        # Entity reads (the API resolve path) accept the same routed identifiers.
+        entity = await link_resolver.resolve_entity(identifier, strict=True)
+        assert entity is not None, identifier
+        assert entity.file_path == "components/core-service.txt"
+
+    markdown = await link_resolver.resolve_link("components/core-service")
+    assert markdown is not None
+    assert markdown.permalink == f"{project_prefix}/components/core-service"
+
+
+@pytest.mark.asyncio
+async def test_workspace_qualified_title_resolves_exactly(link_resolver, project_prefix):
+    """Workspace routes qualify as `<workspace>/<project>/<Title>` (#1626 review)."""
+    from basic_memory.workspace_context import workspace_permalink_context
+
+    with workspace_permalink_context("team-paul", "organization"):
+        result = await link_resolver.resolve_link(
+            f"team-paul/{project_prefix}/Service Config", use_search=False
+        )
+    assert result is not None
+    assert result.title == "Service Config"
+    assert link_resolver._own_project_remainder("anything/at-all", None) is None
+    assert link_resolver._own_project_remainder(f"{project_prefix}/", project_prefix) is None
