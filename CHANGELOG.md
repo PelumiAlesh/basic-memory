@@ -61,7 +61,7 @@
   is local and clipped.
 
 - Fork builds identify themselves: `basic-memory --version` and the package metadata
-  both report `0.24.0+pelumi.1` (a PEP 440 local label) when installed from
+  both report `0.23.2+pelumi.2` (a PEP 440 local label) when installed from
   `git+https://github.com/PelumiAlesh/basic-memory`, with or without git tags. The
   periodic update check, the stdio MCP background update, and `bm update` no longer
   replace a fork build with the upstream release; `bm update --force` does so on purpose.

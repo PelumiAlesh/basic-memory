@@ -14,7 +14,15 @@ def test_wrap_harness_adds_fence() -> None:
 def test_brief_help_accepts_conversation_alias() -> None:
     from typer.main import get_command
 
-    brief = get_command(cli_app).commands["brief"]
-    option_names = [name for param in brief.params for name in param.opts]
+    # Typer 0.26's group is not click.Group. Read the command map by attribute.
+    commands = getattr(get_command(cli_app), "commands", None)
+    assert isinstance(commands, dict)
+    params = getattr(commands["brief"], "params", None)
+    assert isinstance(params, list)
+    option_names: list[str] = []
+    for param in params:
+        opts = getattr(param, "opts", None)
+        assert isinstance(opts, list)
+        option_names.extend(opt for opt in opts if isinstance(opt, str))
     assert "--conversation" in option_names
     assert "--conversation-id" in option_names

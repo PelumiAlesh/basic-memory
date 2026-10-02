@@ -95,12 +95,17 @@ def _default_project_path() -> Path | None:
         return None
     if isinstance(entry, str):
         project_path = entry
-    elif isinstance(entry, dict) and isinstance(entry.get("path"), str):
-        project_path = entry["path"]
+    elif isinstance(entry, dict):
+        # Bind the value before the Path() call. A second lookup is not narrowed.
+        path_value = entry.get("path")
+        if not isinstance(path_value, str):
+            return None
+        project_path = path_value
     else:
         return None
-    resolved = Path(project_path)
-    return resolved if project_path else None
+    if not project_path:
+        return None
+    return Path(project_path)
 
 
 def ensure_log_dir(project_home: Path) -> Path:

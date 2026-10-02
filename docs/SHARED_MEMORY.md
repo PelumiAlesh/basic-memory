@@ -25,21 +25,22 @@ setting that controls the feature and its default.
 ## Fork version and updates
 
 Builds from this repository carry a PEP 440 local version label, for example
-`0.24.0+pelumi.1`. Both `basic-memory --version` and the installed package metadata report it:
+`0.23.2+pelumi.2`. Both `basic-memory --version` and the installed package metadata report it:
 
 ```bash
 uv tool install --prerelease=allow --reinstall \
   "basic-memory @ git+https://github.com/PelumiAlesh/basic-memory@cursor/v2-stack-integrated-7b2f"
-basic-memory --version        # Basic Memory version: 0.24.0+pelumi.1
+basic-memory --version        # Basic Memory version: 0.23.2+pelumi.2
 ```
 
 The version comes from `__version__` in `src/basic_memory/__init__.py` (hatch reads it; see
 `[tool.hatch.version]` in `pyproject.toml`). Upstream derives its version from git release tags,
 which the fork does not have. To bump the fork, edit that one string. When an upstream release
 changes it, resolve the merge by keeping the upstream release and the fork label, for example
-`0.24.0+pelumi.1`. Upstream v0.24.0 is in this tree and is not tagged yet. The local label sorts
-above a same-numbered public release, the same way `0.23.2+pelumi.1` sorted above PyPI 0.23.2,
-so install this branch on purpose. Do not `uv tool upgrade` against PyPI.
+`0.24.0+pelumi.1`. This tree contains the unreleased v0.24.0 changes, but the public version
+stays `0.23.2` until that release is tagged: the Claude plugin's `basic-memory>=` floor cannot
+name a version that is not on PyPI. The local label sorts above PyPI 0.23.2, so install this
+branch on purpose. Do not `uv tool upgrade` against PyPI.
 
 Automatic updates never touch a fork build. The periodic CLI check, the background check in
 stdio `basic-memory mcp`, and `bm update` all compare against the upstream release on PyPI or the

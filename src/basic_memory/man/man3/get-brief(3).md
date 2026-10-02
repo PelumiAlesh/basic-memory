@@ -20,7 +20,8 @@ verified: fork
 MCP:
 
 ```
-get_brief(project=None, project_id=None, token_budget=None, conversation_id=None)
+get_brief(project=None, project_id=None, token_budget=None,
+          conversation_id=None)
 ```
 
 CLI:
@@ -61,8 +62,7 @@ returns a one-line already-delivered notice instead of another brief.
 - **project** (string | null, optional, default: None)
 - **project_id** (string | null, optional, default: None)
 - **token_budget** (integer | null, optional, default: None)
-- **conversation_id** (string | null, optional, default: None) — when set, recorded
-  for `brief_refresh_hours` throttling
+- **conversation_id** (string | null, optional, default: None)
 
 ## SEE ALSO
 

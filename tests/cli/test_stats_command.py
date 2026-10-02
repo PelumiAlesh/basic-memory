@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from typer.testing import CliRunner
 
@@ -14,7 +15,7 @@ from basic_memory.shared_memory.stats import compute_stats, load_events, report_
 from basic_memory.shared_memory.usage_log_fast import append_event_line
 
 
-def _write_event(home: Path, payload: dict) -> None:
+def _write_event(home: Path, payload: dict[str, Any]) -> None:
     append_event_line(payload, project_dir=home)
 
 

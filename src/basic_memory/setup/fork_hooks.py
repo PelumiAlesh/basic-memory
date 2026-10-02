@@ -155,6 +155,7 @@ def run_claude_stop() -> None:
 
 def _run_capture_hook(payload: dict[str, Any], *, harness: str) -> None:
     import importlib
+    import importlib.util
 
     config = ConfigManager().config
     if not config.session_capture_enabled:

@@ -77,7 +77,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "project",
         "project_id",
     ],
-    "get_brief": ["project", "project_id", "token_budget"],
+    "get_brief": ["project", "project_id", "token_budget", "conversation_id"],
     "grep": [
         "pattern",
         "literal",

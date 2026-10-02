@@ -6,12 +6,15 @@ only if it counts as a filter and is forwarded to that pass.
 """
 
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from basic_memory.repository.search_reader import SemanticSearch
+from basic_memory.repository.search_index_row import SearchIndexRow
+from basic_memory.repository.search_query import PreparedSearchQuery
+from basic_memory.repository.search_reader import CandidateWindow, SemanticSearch, WindowChunk
 from basic_memory.repository.search_scope import ProjectScope
 from tests.repository.test_hybrid_fusion import (
     HYBRID_QUERY,
@@ -55,14 +58,41 @@ async def test_exclusion_applies_in_hybrid_mode():
     semantic = SemanticSearch(
         cast(Any, None), ProjectScope.single(1), fts_leg, fake_vector_retrieval()
     )
-    vector_leg = AsyncMock(return_value=[HybridFakeRow(id=1, score=0.9, title="current")])
+    row = SearchIndexRow(
+        project_id=1,
+        id=1,
+        type="entity",
+        file_path="current.md",
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        updated_at=datetime(2026, 1, 1, tzinfo=UTC),
+        title="current",
+        score=0.9,
+    )
+    seen: list[PreparedSearchQuery] = []
 
-    with patch.object(semantic, "vector_only", vector_leg):
+    async def vector_window(
+        query: PreparedSearchQuery,
+        _candidate_limit: int,
+        *,
+        trace: object = None,
+    ) -> CandidateWindow:
+        # Hybrid no longer calls vector_only. The vector leg is this window, and
+        # the exclusion has to arrive on the query that builds it.
+        seen.append(query)
+        key = (row.type, row.id)
+        return CandidateWindow(
+            similarity_by_key={key: 0.9},
+            chunks_by_key={key: [WindowChunk(position=0, similarity=0.9, text="current")]},
+            rows={key: row},
+            chunk_count=1,
+        )
+
+    with patch.object(semantic, "_vector_window", vector_window):
         results = await semantic.hybrid(
             replace(HYBRID_QUERY, exclude_statuses=EXCLUDED), limit=10, offset=0
         )
 
     assert [row.id for row in results] == [1]
     assert fts_leg.queries[0].exclude_statuses == EXCLUDED
-    assert vector_leg.await_args is not None, "vector leg was never awaited"
-    assert vector_leg.await_args.args[0].exclude_statuses == EXCLUDED
+    assert seen, "vector window was never built"
+    assert seen[0].exclude_statuses == EXCLUDED
