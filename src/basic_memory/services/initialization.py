@@ -28,6 +28,37 @@ if TYPE_CHECKING:
     from basic_memory.read_cache import ReadCache, ReadCacheInvalidator
 
 
+def project_index_start_message(app_config: BasicMemoryConfig, project: Project) -> str:
+    """Say when a project is about to be indexed, and when that is the first time.
+
+    A display name that is not the config key used to be skipped as not locally
+    indexable. This build indexes it. The first scan is the one that inserts
+    permalinks, so the log names that case before any note is rewritten.
+    """
+    config_key: str | None = None
+    permalink = generate_permalink(project.name)
+    for name in app_config.projects:
+        if name == project.name or generate_permalink(name) == permalink:
+            config_key = name
+            break
+    if project.last_scan_timestamp is None:
+        differed = (
+            f" Config key {config_key!r} differs from the display name, so this "
+            "is the first index of a project older builds skipped."
+            if config_key is not None and config_key != project.name
+            else ""
+        )
+        return (
+            f"Indexing project for the first time: display_name={project.name!r} "
+            f"config_key={config_key!r} path={project.path}.{differed} "
+            "Permalink lines are inserted without rewriting other note bytes. "
+            "Pause Obsidian Sync until this index finishes."
+        )
+    if config_key is not None and config_key != project.name:
+        return f"Starting background project index for {project.name!r} (config key {config_key!r})"
+    return f"Starting background project index for project: {project.name}"
+
+
 async def run_initial_project_index(
     project: Project,
     *,
@@ -319,7 +350,7 @@ async def initialize_file_indexing(
     # Start indexing for all projects as background tasks (non-blocking)
     async def index_project_background(project: Project):
         """Index a single project in the background."""
-        logger.info(f"Starting background project index for project: {project.name}")
+        logger.info(project_index_start_message(app_config, project))
         try:
             await run_initial_project_index(
                 project,

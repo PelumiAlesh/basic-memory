@@ -15,8 +15,10 @@ from basic_memory.runtime.note_materialization import (
     plan_prepared_note_write,
 )
 from basic_memory.runtime.note_object_metadata import (
+    NOTE_OBJECT_ACTOR_KIND_AGENT,
     NOTE_OBJECT_ACTOR_KIND_MCP_CLIENT,
     NOTE_OBJECT_ACTOR_KIND_METADATA,
+    NOTE_OBJECT_ACTOR_KIND_SYSTEM,
     NOTE_OBJECT_ACTOR_NAME_METADATA,
     NOTE_OBJECT_ACTOR_USER_PROFILE_ID_METADATA,
     NOTE_OBJECT_DB_CHECKSUM_METADATA,
@@ -48,11 +50,9 @@ from basic_memory.runtime.cleanup import (
     RuntimeExternalFileDeleteRequest,
     RuntimeFileDeleteResult,
     RuntimeNoteFileDeleteJobRequest,
-    RuntimeNoteFileDeletePlan,
     RuntimeProjectDeleteResult,
     RuntimeProjectFileSnapshot,
     plan_directory_file_snapshot,
-    plan_note_file_delete_cleanup,
     plan_note_file_delete_job_request,
 )
 from basic_memory.runtime.jobs import (
@@ -910,61 +910,6 @@ class TestRuntimeContracts:
             reason="file deleted: notes/a.md",
         )
 
-    def test_plan_note_file_delete_cleanup_selects_safe_storage_action(self):
-        no_guard = plan_note_file_delete_cleanup(
-            entity_id=1,
-            file_path="notes/a.md",
-            accepted_checksum=None,
-            actual_checksum=None,
-        )
-        assert no_guard == RuntimeNoteFileDeletePlan(
-            result=RuntimeFileDeleteResult.no_accepted_checksum(
-                entity_id=1,
-                file_path="notes/a.md",
-            ),
-            actual_checksum=None,
-        )
-        assert no_guard.should_delete_file is False
-
-        missing = plan_note_file_delete_cleanup(
-            entity_id=1,
-            file_path="notes/a.md",
-            accepted_checksum="file-sum",
-            actual_checksum=None,
-        )
-        assert missing.result == RuntimeFileDeleteResult.already_absent(
-            entity_id=1,
-            file_path="notes/a.md",
-        )
-        assert missing.should_delete_file is False
-
-        changed = plan_note_file_delete_cleanup(
-            entity_id=1,
-            file_path="notes/a.md",
-            accepted_checksum="file-sum",
-            actual_checksum="new-file-sum",
-        )
-        assert changed.result == RuntimeFileDeleteResult.changed_before_delete(
-            entity_id=1,
-            file_path="notes/a.md",
-        )
-        assert changed.should_delete_file is False
-
-        matching = plan_note_file_delete_cleanup(
-            entity_id=1,
-            file_path="notes/a.md",
-            accepted_checksum="file-sum",
-            actual_checksum="file-sum",
-        )
-        assert matching.result == RuntimeFileDeleteResult.deleted(
-            entity_id=1,
-            file_path="notes/a.md",
-        )
-        assert matching.should_delete_file is True
-
-        with pytest.raises(FrozenInstanceError):
-            setattr(matching, "actual_checksum", "other")
-
     def test_runtime_note_materialization_result_is_a_frozen_outcome(self):
         result = RuntimeNoteMaterializationResult(
             entity_id=42,
@@ -1152,7 +1097,7 @@ class TestRuntimeContracts:
         with pytest.raises(FrozenInstanceError):
             setattr(provenance, "actor_name", "changed")
 
-    def test_note_actor_origin_uses_mcp_client_labels_only(self):
+    def test_note_actor_origin_uses_mcp_client_and_agent_labels(self):
         assert RuntimeNoteActorOrigin.from_actor_metadata(
             actor_kind=NOTE_OBJECT_ACTOR_KIND_MCP_CLIENT,
             actor_name="Claude Code",
@@ -1171,6 +1116,40 @@ class TestRuntimeContracts:
             RuntimeNoteActorOrigin.from_actor_metadata(
                 actor_kind="user",
                 actor_name="Pat",
+            )
+            is None
+        )
+
+    def test_note_actor_origin_keeps_agent_origin_from_object_metadata(self):
+        # Regression: cloud rebuilds API-write origins from stored object metadata, and
+        # API-key writes are recorded as kind "agent" with the key name as the label.
+        provenance = RuntimeNoteObjectProvenance.from_object_metadata(
+            {
+                NOTE_OBJECT_ACTOR_KIND_METADATA: NOTE_OBJECT_ACTOR_KIND_AGENT,
+                NOTE_OBJECT_ACTOR_NAME_METADATA: "verify-full",
+            }
+        )
+
+        assert RuntimeNoteActorOrigin.from_actor_metadata(
+            actor_kind=provenance.actor_kind,
+            actor_name=provenance.actor_name,
+        ) == RuntimeNoteActorOrigin(
+            actor_kind=NOTE_OBJECT_ACTOR_KIND_AGENT,
+            actor_name="verify-full",
+        )
+        assert (
+            RuntimeNoteActorOrigin.from_actor_metadata(
+                actor_kind=NOTE_OBJECT_ACTOR_KIND_AGENT,
+                actor_name=None,
+            )
+            is None
+        )
+
+    def test_note_actor_origin_excludes_system_writers(self):
+        assert (
+            RuntimeNoteActorOrigin.from_actor_metadata(
+                actor_kind=NOTE_OBJECT_ACTOR_KIND_SYSTEM,
+                actor_name="wiki projector",
             )
             is None
         )

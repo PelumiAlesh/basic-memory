@@ -1041,6 +1041,7 @@ async def test_search_notes_defaults_to_hybrid_when_semantic_enabled(monkeypatch
     class StubConfig:
         semantic_search_enabled: bool = True
         default_search_type: str | None = None
+        search_exclude_inactive: bool = False
 
     @dataclass
     class StubContainer:
@@ -1103,6 +1104,7 @@ async def test_search_notes_defaults_to_fts_when_semantic_disabled(monkeypatch):
     class StubConfig:
         semantic_search_enabled: bool = False
         default_search_type: str | None = None
+        search_exclude_inactive: bool = False
 
     @dataclass
     class StubContainer:
@@ -1164,6 +1166,7 @@ async def test_search_notes_explicit_text_stays_fts_when_semantic_enabled(monkey
     class StubConfig:
         semantic_search_enabled: bool = True
         default_search_type: str | None = None
+        search_exclude_inactive: bool = False
 
     @dataclass
     class StubContainer:
@@ -1233,7 +1236,13 @@ async def test_search_notes_defaults_to_hybrid_when_container_not_initialized(mo
             (),
             {
                 "config": type(
-                    "Cfg", (), {"semantic_search_enabled": True, "default_search_type": None}
+                    "Cfg",
+                    (),
+                    {
+                        "semantic_search_enabled": True,
+                        "default_search_type": None,
+                        "search_exclude_inactive": False,
+                    },
                 )()
             },
         )(),
@@ -1298,7 +1307,13 @@ async def test_search_notes_defaults_to_fts_when_container_not_initialized_and_s
             (),
             {
                 "config": type(
-                    "Cfg", (), {"semantic_search_enabled": False, "default_search_type": None}
+                    "Cfg",
+                    (),
+                    {
+                        "semantic_search_enabled": False,
+                        "default_search_type": None,
+                        "search_exclude_inactive": False,
+                    },
                 )()
             },
         )(),

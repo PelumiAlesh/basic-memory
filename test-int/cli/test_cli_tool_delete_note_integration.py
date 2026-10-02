@@ -116,6 +116,10 @@ def test_delete_note_removes_file_database_record_and_search_result(
         "title": "CLI Delete Single Note",
         "permalink": note["permalink"],
         "file_path": note["file_path"],
+        "verification": {
+            "status": "verified",
+            "checks": {"index": "ok", "disk": "ok"},
+        },
     }
     assert not note_path.exists()
 

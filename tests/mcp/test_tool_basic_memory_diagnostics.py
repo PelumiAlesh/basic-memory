@@ -208,6 +208,25 @@ def test_diagnostics_redacts_cloud_api_key(tmp_path):
     assert "cloud_api_key" not in result
 
 
+def test_diagnostics_never_shows_one_app_the_other_apps_http_tokens(tmp_path):
+    """Any connected app can call this tool, so the HTTP bearer tokens stay out of it."""
+    config_data = {
+        "mcp_http_token": "shared-http-token-secret",
+        "mcp_http_client_tokens": {"cursor": "cursor-http-token-secret"},
+        "mcp_http_allowed_hosts": ["memory.lan"],
+        "projects": {},
+    }
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(config_data))
+
+    result = basic_memory_diagnostics()
+
+    assert "http-token-secret" not in result
+    assert "mcp_http_token" not in result
+    assert "mcp_http_client_tokens" not in result
+    assert "memory.lan" in result
+
+
 def test_diagnostics_redacts_semantic_embedding_api_key(tmp_path):
     """Provider credentials must never appear in diagnostic output."""
     config_data = {

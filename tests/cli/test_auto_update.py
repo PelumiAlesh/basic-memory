@@ -14,6 +14,7 @@ from typing import Any, cast
 import pytest
 from rich.console import Console
 
+import basic_memory
 from basic_memory.cli.auto_update import (
     AutoUpdateResult,
     AutoUpdateStatus,
@@ -22,6 +23,7 @@ from basic_memory.cli.auto_update import (
     _check_homebrew_update_available,
     _is_interactive_session,
     _preload_lazy_console_modules,
+    is_fork_build,
     print_update_status,
     detect_install_source,
     maybe_run_periodic_auto_update,
@@ -33,6 +35,13 @@ UNTRUSTED_TAP_STDERR = (
     "Error: Refusing to load formula basicmachines-co/basic-memory/basic-memory "
     "from untrusted tap basicmachines-co/basic-memory."
 )
+UV_TOOL_PYTHON = "/Users/me/.local/share/uv/tools/basic-memory/bin/python"
+
+
+@pytest.fixture(autouse=True)
+def upstream_build(monkeypatch):
+    """Run as an upstream build; the fork guard tests below opt back into the fork label."""
+    monkeypatch.setattr(basic_memory, "__version__", "0.23.2")
 
 
 def _brew_outdated_payload(current_version: str | None = None) -> str:
@@ -709,6 +718,95 @@ def test_maybe_run_periodic_auto_update_uses_interactive_probe_when_not_overridd
     assert result.status == AutoUpdateStatus.UP_TO_DATE
     # UP_TO_DATE is intentionally silent for periodic checks.
     assert buf.getvalue() == ""
+
+
+def test_is_fork_build_reads_the_local_label():
+    assert is_fork_build("0.23.2+pelumi.1")
+    assert is_fork_build("0.24.0+pelumi.12")
+    assert not is_fork_build("0.23.2")
+    assert not is_fork_build("0.23.3.dev4+g1a2b3c4")
+    assert not is_fork_build("0.23.2+pelumix.1")
+
+
+@pytest.mark.parametrize(
+    ("force", "check_only", "silent"),
+    [
+        pytest.param(False, False, True, id="stdio-mcp-background-thread"),
+        pytest.param(False, False, False, id="cli-periodic-check"),
+        pytest.param(True, False, False, id="bm-update"),
+        pytest.param(True, True, False, id="bm-update-check"),
+    ],
+)
+def test_fork_build_never_checks_or_installs(monkeypatch, tmp_path, force, check_only, silent):
+    monkeypatch.setattr(basic_memory, "__version__", "0.23.2+pelumi.1")
+    config = _base_config(tmp_path)
+    config.auto_update = True
+    manager = StubConfigManager(config)
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("a fork build must not ask PyPI or run an upgrade")
+
+    monkeypatch.setattr("basic_memory.cli.auto_update._check_pypi_update_available", _unexpected)
+    monkeypatch.setattr("basic_memory.cli.auto_update._run_subprocess", _unexpected)
+
+    result = run_auto_update(
+        force=force,
+        check_only=check_only,
+        silent=silent,
+        config_manager=_config_manager(manager),
+        executable=UV_TOOL_PYTHON,
+    )
+
+    assert result.status == AutoUpdateStatus.FORK_BUILD
+    assert result.checked is False
+    assert result.updated is False
+    assert manager.save_calls == 0
+    assert "git+https://github.com/PelumiAlesh/basic-memory" in (result.message or "")
+    assert "@cursor/v2-stack-integrated-7b2f" in (result.message or "")
+    assert "+pelumi" in (result.message or "")
+
+
+def test_fork_build_periodic_check_prints_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(basic_memory, "__version__", "0.23.2+pelumi.1")
+    manager = StubConfigManager(_base_config(tmp_path))
+    console, buf = _capture_console()
+
+    result = maybe_run_periodic_auto_update(
+        "status",
+        config_manager=_config_manager(manager),
+        is_interactive=True,
+        console=console,
+    )
+
+    assert result is not None
+    assert result.status == AutoUpdateStatus.FORK_BUILD
+    assert buf.getvalue() == ""
+
+
+def test_replace_fork_opts_into_the_upstream_upgrade(monkeypatch, tmp_path):
+    monkeypatch.setattr(basic_memory, "__version__", "0.23.2+pelumi.1")
+    manager = StubConfigManager(_base_config(tmp_path))
+    monkeypatch.setattr(
+        "basic_memory.cli.auto_update._check_pypi_update_available",
+        lambda: (True, "9.9.9"),
+    )
+    calls: list[list[str]] = []
+
+    def _fake_run_subprocess(command, **kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("basic_memory.cli.auto_update._run_subprocess", _fake_run_subprocess)
+
+    result = run_auto_update(
+        force=True,
+        replace_fork=True,
+        config_manager=_config_manager(manager),
+        executable=UV_TOOL_PYTHON,
+    )
+
+    assert result.status == AutoUpdateStatus.UPDATED
+    assert calls == [["uv", "tool", "upgrade", "basic-memory", "--prerelease=allow"]]
 
 
 def test_is_interactive_session_handles_closed_stdio(monkeypatch):

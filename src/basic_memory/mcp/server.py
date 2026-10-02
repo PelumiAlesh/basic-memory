@@ -18,6 +18,7 @@ from basic_memory.index.note_content_materialization import drain_pending_materi
 from basic_memory.db import scoped_session
 from basic_memory.index.local_schedulers import drain_background_tasks
 from basic_memory.mcp.client_info import MCPClientInfoMiddleware
+from basic_memory.shared_memory.usage_log import UsageLogMiddleware, start_usage_log_background
 from basic_memory.mcp.container import McpContainer, set_container
 from basic_memory.read_cache import ReadCache, ReadCacheUnavailable
 from basic_memory.read_cache.lifecycle import open_redis_read_cache
@@ -113,6 +114,9 @@ async def lifespan(app: FastMCP):
     #      config decides what clients see (no if-checks inside tool bodies).
     # Outcome: enabled by default; an explicit opt-out hides the POSIX group.
     set_posix_tools_visibility(app, config.enable_posix_tools)
+
+    if config.usage_log_enabled and not config.is_test_env:
+        start_usage_log_background()
 
     standalone_redis_url = None if container.mode.is_cloud else config.redis_url
 
@@ -237,26 +241,29 @@ async def lifespan(app: FastMCP):
 BASIC_MEMORY_INSTRUCTIONS = (
     "Basic Memory is the user's personal knowledge base: Markdown notes that persist "
     "across conversations and that both the user and their AI assistants can read and write.\n\n"
-    "At the start of a session, call `recent_activity` to orient yourself in the user's notes "
-    "before answering from memory. If the knowledge base is empty, briefly explain that Basic "
+    "When a request may draw on the user's notes, check them (`recent_activity` is a good "
+    "first look) before answering from memory. If the knowledge base is empty, briefly explain "
+    "that Basic "
     "Memory gives them persistent notes shared between the user and their AI, and offer to save "
     "something useful from this conversation as their first note with `write_note` — then wait "
     "for them to agree before writing anything. Do not create notes unprompted.\n\n"
     "When available in your tool list, use the read-only POSIX tools `ls`, `find`, "
     "`grep`, `cat`, `tail`, and `man` for compact navigation. If they are absent, use "
-    "the existing rich tools instead. Projects are mount points: "
+    "the note tools (`read_note`, `search_notes`, `list_directory`) instead. Projects are "
+    "mount points: "
     '`ls(path="/")` without a project constraint lists '
     'addressable projects; `ls(path="research/notes")` and '
     '`cat(identifier="research/notes/topic.md")` route into the research project. '
     "Use returned project-qualified paths for follow-up reads. With multiple projects, "
     "qualify paths or pass `project` (also required for `grep` and `tail`); an explicit "
     "project must agree with any path prefix. `cat` supports bounded line, section, and "
-    "token-budget reads; `find` can return selected metadata fields. All existing tools "
-    "remain available. Set `enable_posix_tools=false` to hide the POSIX tools.\n\n"
+    "token-budget reads; `find` can return selected metadata fields. "
+    "Set `enable_posix_tools=false` to hide the POSIX tools.\n\n"
     "For a fuller guide, read the `memory://ai_assistant_guide` resource. The manual has a "
     "page for nearly every tool, with verified examples and gotchas: `memory://man` lists "
     "them, and `memory://man/<tool>(3)` (for example `memory://man/search-notes(3)`) is one "
-    "page — read it before using a tool for the first time. Any note is readable the same "
+    "page — read a tool's page when its description leaves a question open or a call fails. "
+    "Any note is readable the same "
     "way: its memory://<project>/<path> URL is a resource returning the raw markdown. If "
     "you have a web or fetch tool "
     "and need current "
@@ -270,3 +277,4 @@ mcp = FastMCP(
     lifespan=lifespan,
 )
 mcp.add_middleware(MCPClientInfoMiddleware())
+mcp.add_middleware(UsageLogMiddleware())

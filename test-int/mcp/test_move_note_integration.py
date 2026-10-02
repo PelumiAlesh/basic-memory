@@ -6,9 +6,13 @@ Tests the complete move note workflow: MCP client -> MCP server -> FastAPI -> da
 
 import json
 from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from httpx import AsyncClient
 
 from basic_memory import db
@@ -25,6 +29,21 @@ from basic_memory.repository.note_content_repository import NoteContentRepositor
 from basic_memory.repository.note_file_vacate_repository import NoteFileVacateRepository
 from basic_memory.runtime.cleanup import RuntimeNoteFileDeleteJobRequest
 from basic_memory.services.file_service import FileService
+
+
+async def move_even_if_source_lingers(client: Any, arguments: dict[str, Any]) -> Any:
+    """Return the move text when read-back reports the source file still exists.
+
+    These tests leave that file on purpose. The tool reports it as an error after
+    the move has already landed.
+    """
+    try:
+        return await client.call_tool("move_note", arguments)
+    except ToolError as error:
+        message = str(error)
+        if "source file still exists" not in message:
+            raise
+        return SimpleNamespace(content=[SimpleNamespace(text=message)])
 
 
 @pytest.mark.asyncio
@@ -146,8 +165,8 @@ async def test_move_note_lingering_source_is_not_reindexed(
             leave_source_cleanup_pending,
         )
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Orphan Race",
@@ -228,8 +247,8 @@ async def test_startup_recovery_retries_lost_move_source_cleanup(
                 "content": "# Lost Cleanup\n\nStartup must retry this source deletion.",
             },
         )
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Lost Cleanup",
@@ -454,8 +473,8 @@ async def test_move_retires_vacate_marker_after_source_replacement(
         original_source = source_path.read_bytes()
         source_checksum = sha256(original_source).hexdigest()
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Replacement Lifecycle",
@@ -695,8 +714,8 @@ async def test_deleted_move_lingering_source_is_not_resurrected(
         )
         source_checksum = sha256(source_path.read_bytes()).hexdigest()
 
-        move_result = await client.call_tool(
-            "move_note",
+        move_result = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Delete After Move",
@@ -792,8 +811,8 @@ async def test_move_back_retires_old_destination_marker_before_path_reuse(
         )
         original_source = source_path.read_bytes()
 
-        move_away = await client.call_tool(
-            "move_note",
+        move_away = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": "Move Back Lifecycle",
@@ -819,8 +838,8 @@ async def test_move_back_retires_old_destination_marker_before_path_reuse(
         # Simulate the first move's physical cleanup completing without its durable marker being
         # retired. The stale marker must not outlive the next successful publication at this path.
         source_path.unlink()
-        move_back = await client.call_tool(
-            "move_note",
+        move_back = await move_even_if_source_lingers(
+            client,
             {
                 "project": test_project.name,
                 "identifier": destination_relative,
@@ -1084,9 +1103,11 @@ async def test_move_note_error_handling_note_not_found(mcp_server, app, test_pro
                 "identifier": "Non-existent Note",
                 "destination_path": "new/location.md",
             },
+            raise_on_error=False,
         )
 
-        # Should contain error message about the failed operation
+        # A failed move is an MCP error result, and its text keeps the guidance
+        assert move_result.is_error is True
         assert len(move_result.content) == 1
         error_message = move_result.content[0].text
         assert "# Move Failed" in error_message
@@ -1164,9 +1185,11 @@ async def test_move_note_error_handling_destination_exists(mcp_server, app, test
                 "identifier": "Source Note",
                 "destination_path": "destination/Existing Note.md",  # Use exact existing file name
             },
+            raise_on_error=False,
         )
 
-        # Should contain error message about the failed operation
+        # A failed move is an MCP error result, and its text keeps the guidance
+        assert move_result.is_error is True
         assert len(move_result.content) == 1
         error_message = move_result.content[0].text
         assert "# Move Failed" in error_message
@@ -1549,8 +1572,10 @@ async def test_move_note_strict_resolution_rejects_fuzzy_match(mcp_server, app, 
                 "identifier": "Move Strict Test NONEXISTENT",
                 "destination_path": "archive/Moved.md",
             },
+            raise_on_error=False,
         )
 
+        assert move_result.is_error is True
         assert len(move_result.content) == 1
         error_text = move_result.content[0].text
         assert "# Move Failed" in error_text
@@ -1788,3 +1813,180 @@ async def test_move_note_interior_projects_segment_still_succeeds(mcp_server, ap
             },
         )
         assert "Interior projects segment is fine" in read_result.content[0].text
+
+
+async def _create_sibling_project(client: Client[Any], name: str, project_path: Path) -> None:
+    """Create a second project whose name the tests reuse as a local folder name."""
+    await client.call_tool(
+        "create_memory_project",
+        {
+            "project_name": name,
+            "project_path": str(project_path),
+            "set_default": False,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_move_directory_into_project_named_folder_rejected(
+    mcp_server, app, test_project, tmp_path_factory
+):
+    """A directory move gets the same cross-project verdict a file move gets (#1607).
+
+    The guard used to run only on the file path, so `work/moved` was refused for a note
+    and accepted for a directory.
+    """
+
+    async with Client(mcp_server) as client:
+        await _create_sibling_project(client, "work", tmp_path_factory.mktemp("work"))
+        await client.call_tool(
+            "write_note",
+            {
+                "project": test_project.name,
+                "title": "Scratch Dir Note",
+                "directory": "worknot/scratch",
+                "content": "# Scratch Dir Note\n\nStays put.",
+            },
+        )
+
+        file_result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "Scratch Dir Note",
+                "destination_folder": "work/scratch",
+                "output_format": "json",
+            },
+        )
+        dir_result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "worknot/scratch",
+                "destination_path": "work/moved",
+                "is_directory": True,
+                "output_format": "json",
+            },
+        )
+
+        file_data = json.loads(file_result.content[0].text)
+        dir_data = json.loads(dir_result.content[0].text)
+        assert file_data["error"] == "CROSS_PROJECT_MOVE_NOT_SUPPORTED"
+        assert dir_data["error"] == "CROSS_PROJECT_MOVE_NOT_SUPPORTED"
+        assert dir_data["destination"] == "work/moved"
+
+        text_result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "worknot/scratch",
+                "destination_path": "work/moved",
+                "is_directory": True,
+            },
+        )
+        assert "Cross-Project Move Not Supported" in text_result.content[0].text
+
+        read_original = await client.call_tool(
+            "read_note",
+            {"project": test_project.name, "identifier": "worknot/scratch/Scratch Dir Note.md"},
+        )
+        assert "Stays put." in read_original.content[0].text
+
+
+@pytest.mark.asyncio
+async def test_move_into_local_folder_with_other_casing_succeeds(
+    mcp_server, app, test_project, tmp_path_factory
+):
+    """A local folder that differs only in case still counts as local (#1607, #1326).
+
+    The server lands "schemas/" in an existing "Schemas/", so the guard resolves the
+    leading folder's casing the same way before treating the move as cross-project.
+    """
+
+    async with Client(mcp_server) as client:
+        await _create_sibling_project(client, "schemas", tmp_path_factory.mktemp("schemas"))
+        for title, directory in (("Existing Schema", "Schemas"), ("Incoming Note", "inbox")):
+            await client.call_tool(
+                "write_note",
+                {
+                    "project": test_project.name,
+                    "title": title,
+                    "directory": directory,
+                    "content": f"# {title}\n\nBody of {title}.",
+                },
+            )
+
+        result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "Incoming Note",
+                "destination_path": "schemas/Incoming Note.md",
+                "output_format": "json",
+            },
+        )
+        data = json.loads(result.content[0].text)
+        assert data["moved"] is True
+        assert data["file_path"] == "Schemas/Incoming Note.md"
+
+
+@pytest.mark.asyncio
+async def test_move_into_existing_local_folder_named_after_project_succeeds(
+    mcp_server, app, test_project, tmp_path_factory
+):
+    """A folder that already exists locally is a same-project destination (#1607).
+
+    Knowledge bases organised by domain have folders named after sibling projects. When
+    `work/` already holds notes in the active project, moving into it is local intent,
+    for file and directory moves alike.
+    """
+
+    async with Client(mcp_server) as client:
+        await _create_sibling_project(client, "work", tmp_path_factory.mktemp("work"))
+        for title, directory in (
+            ("Existing Work Note", "work/scratch"),
+            ("Incoming File Note", "inbox"),
+            ("Incoming Dir Note", "worknot/scratch"),
+        ):
+            await client.call_tool(
+                "write_note",
+                {
+                    "project": test_project.name,
+                    "title": title,
+                    "directory": directory,
+                    "content": f"# {title}\n\nBody of {title}.",
+                },
+            )
+
+        file_result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "Incoming File Note",
+                "destination_folder": "work/scratch",
+                "output_format": "json",
+            },
+        )
+        file_data = json.loads(file_result.content[0].text)
+        assert file_data["moved"] is True
+        assert file_data["file_path"] == "work/scratch/Incoming File Note.md"
+
+        dir_result = await client.call_tool(
+            "move_note",
+            {
+                "project": test_project.name,
+                "identifier": "worknot/scratch",
+                "destination_path": "work/moved",
+                "is_directory": True,
+                "output_format": "json",
+            },
+        )
+        dir_data = json.loads(dir_result.content[0].text)
+        assert dir_data["moved"] is True
+        assert dir_data["successful_moves"] == 1
+
+        read_moved = await client.call_tool(
+            "read_note",
+            {"project": test_project.name, "identifier": "work/moved/Incoming Dir Note.md"},
+        )
+        assert "Body of Incoming Dir Note." in read_moved.content[0].text

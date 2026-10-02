@@ -1,9 +1,23 @@
 """Tests for delete_note MCP tool."""
 
+import functools
+from dataclasses import replace
+from typing import Any
 from unittest.mock import patch
+from uuid import UUID
 
 import pytest
+from sqlalchemy import select
 
+from basic_memory import db
+from basic_memory.deps.services import get_note_content_mutation_service
+from basic_memory.models import AcceptedProjectNoteChange
+from basic_memory.runtime.project_partition import RuntimeProjectNoteOperation
+from basic_memory.services.note_content_writes import (
+    NoteContentMutationActorContext,
+    NoteContentMutationKind,
+    NoteContentMutationService,
+)
 from basic_memory.mcp.tools.delete_note import delete_note, _format_delete_error_response
 from basic_memory.mcp.tools.read_note import read_note
 from basic_memory.mcp.tools.write_note import write_note
@@ -18,18 +32,17 @@ class TestDeleteNoteErrorFormatting:
 
         assert "# Delete Failed - Note Not Found" in result
         assert "The note 'test-note' could not be found" in result
-        assert 'search_notes("test-project", "test-note")' in result
-        assert "Already deleted" in result
-        assert "Wrong identifier" in result
+        assert 'search_notes(query="test-note", project="test-project")' in result
+        assert 'delete_note(identifier="...", project="test-project")' in result
+        assert "already be deleted" in result
 
     def test_format_delete_error_permission_denied(self, test_project):
         """Test formatting for permission errors."""
         result = _format_delete_error_response(test_project.name, "permission denied", "test-note")
 
         assert "# Delete Failed - Permission Error" in result
-        assert "You don't have permission to delete 'test-note'" in result
-        assert "Check permissions" in result
-        assert "File locks" in result
+        assert "No write access to delete 'test-note'" in result
+        assert "locked by another application" in result
         assert "list_memory_projects()" in result
 
     def test_format_delete_error_access_forbidden(self, test_project):
@@ -37,7 +50,7 @@ class TestDeleteNoteErrorFormatting:
         result = _format_delete_error_response(test_project.name, "access forbidden", "test-note")
 
         assert "# Delete Failed - Permission Error" in result
-        assert "You don't have permission to delete 'test-note'" in result
+        assert "No write access to delete 'test-note'" in result
 
     def test_format_delete_error_server_error(self, test_project):
         """Test formatting for server errors."""
@@ -47,8 +60,8 @@ class TestDeleteNoteErrorFormatting:
 
         assert "# Delete Failed - System Error" in result
         assert "A system error occurred while deleting 'test-note'" in result
-        assert "Try again" in result
-        assert "Check file status" in result
+        assert 'read_note(identifier="test-note", project="test-project")' in result
+        assert "support@basicmemory.com" in result
 
     def test_format_delete_error_filesystem_error(self, test_project):
         """Test formatting for filesystem errors."""
@@ -70,8 +83,8 @@ class TestDeleteNoteErrorFormatting:
 
         assert "# Delete Failed - Database Error" in result
         assert "A database error occurred while deleting 'test-note'" in result
-        assert "Sync conflict" in result
-        assert "Database lock" in result
+        assert "out of sync" in result
+        assert "database lock" in result
 
     def test_format_delete_error_sync_error(self, test_project):
         """Test formatting for sync errors."""
@@ -85,9 +98,8 @@ class TestDeleteNoteErrorFormatting:
         result = _format_delete_error_response(test_project.name, "unknown error", "test-note")
 
         assert "# Delete Failed" in result
-        assert "Error deleting note 'test-note': unknown error" in result
-        assert "General troubleshooting" in result
-        assert "Verify the note exists" in result
+        assert "Error deleting note 'test-note' in test-project: unknown error" in result
+        assert 'search_notes(query="test-note", project="test-project")' in result
 
     def test_format_delete_error_with_complex_identifier(self, test_project):
         """Test formatting with complex identifiers (permalinks)."""
@@ -95,7 +107,7 @@ class TestDeleteNoteErrorFormatting:
             test_project.name, "entity not found", "folder/note-title"
         )
 
-        assert 'search_notes("test-project", "note-title")' in result
+        assert 'search_notes(query="note-title", project="test-project")' in result
         assert "Note Title" in result  # Title format
         assert "folder/note-title" in result  # Permalink format
 
@@ -275,3 +287,61 @@ async def test_delete_directory_workspace_memory_url_strips_route_prefix(client,
     assert result["total_files"] == 1
     assert result["successful_deletes"] == 1
     assert result["failed_deletes"] == 0
+
+
+@pytest.mark.asyncio
+async def test_delete_note_journal_row_carries_resolved_actor(
+    app, client, engine_factory, test_project
+):
+    """The MCP delete path reaches the actor resolver, so its journal row is attributed."""
+    profile_id = UUID("33333333-3333-4333-8333-333333333333")
+    resolved_kinds: list[str] = []
+
+    class IdentifiedCaller:
+        def resolve_mutation_actor(
+            self,
+            *,
+            mutation_kind: NoteContentMutationKind,
+            requested: NoteContentMutationActorContext,
+        ) -> NoteContentMutationActorContext:
+            resolved_kinds.append(mutation_kind)
+            return replace(
+                requested,
+                user_profile_id=profile_id,
+                actor_kind="mcp_client",
+                actor_name="Test Agent",
+            )
+
+    # FastAPI reads the override's parameters through __wrapped__, so the real
+    # dependency's wiring still builds the service this override decorates.
+    @functools.wraps(get_note_content_mutation_service)
+    async def resolved_service(**dependencies: Any) -> NoteContentMutationService:
+        service = await get_note_content_mutation_service(**dependencies)
+        service.actor_resolver = IdentifiedCaller()
+        return service
+
+    app.dependency_overrides[get_note_content_mutation_service] = resolved_service
+
+    await write_note(
+        project=test_project.name,
+        title="Attributed Delete",
+        directory="test",
+        content="# Attributed Delete\nGone soon.",
+    )
+    assert await delete_note("test/attributed-delete", project=test_project.name) is True
+
+    assert resolved_kinds == ["create", "delete"]
+    _, session_maker = engine_factory
+    async with db.scoped_session(session_maker) as session:
+        [row] = (
+            await session.scalars(
+                select(AcceptedProjectNoteChange).where(
+                    AcceptedProjectNoteChange.project_id == test_project.id,
+                    AcceptedProjectNoteChange.operation
+                    == RuntimeProjectNoteOperation.deleted.value,
+                )
+            )
+        ).all()
+    assert row.actor_user_profile_id == str(profile_id)
+    assert row.actor_kind == "mcp_client"
+    assert row.actor_name == "Test Agent"

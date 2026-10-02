@@ -43,6 +43,27 @@ def _analytics_disabled() -> bool:
     return value in {"1", "true", "yes"}
 
 
+def _fork_blocks_analytics() -> bool:
+    """True when this install has opted out of cloud promo traffic.
+
+    `cloud_promo_opt_out` is the config flag. A fork setup manifest means
+    `bm setup` already configured this machine to stay local, even if that
+    flag was later cleared. A config that cannot be read does not send.
+    """
+    try:
+        from basic_memory.config import ConfigManager
+        from basic_memory.setup.manifest import load_manifest
+
+        manager = ConfigManager()
+        if load_manifest(manager.config_dir) is not None:
+            return True
+        if not manager.config_file.is_file():
+            return False
+        return bool(manager.config.cloud_promo_opt_out)
+    except (Exception, SystemExit):
+        return True
+
+
 def _is_configured() -> bool:
     """True when both host and site ID are available."""
     return _umami_host() is not None and _umami_site_id() is not None
@@ -70,7 +91,7 @@ def track(event_name: str, data: Optional[dict[str, Any]] = None) -> None:
     data:
         Optional dict of event properties (all values should be strings/numbers).
     """
-    if _analytics_disabled() or not _is_configured():
+    if _analytics_disabled() or _fork_blocks_analytics() or not _is_configured():
         return
 
     host = _umami_host()

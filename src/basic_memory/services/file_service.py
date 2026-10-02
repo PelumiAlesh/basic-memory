@@ -23,6 +23,10 @@ from basic_memory.models import Entity as EntityModel
 from basic_memory.runtime.storage import RUNTIME_MARKDOWN_CONTENT_TYPE
 from basic_memory.schemas import Entity as EntitySchema
 from basic_memory.services.exceptions import FileOperationError
+from basic_memory.shared_memory.provenance import (
+    prepend_frontmatter_block,
+    write_frontmatter_lines,
+)
 from basic_memory.utils import FilePath
 from loguru import logger
 
@@ -456,26 +460,44 @@ class FileService:
                 content = await f.read()
 
             # Parse current frontmatter with proper error handling for malformed YAML
-            current_fm = {}
-            if file_utils.has_frontmatter(content):
-                try:
-                    current_fm = file_utils.parse_frontmatter(content)
-                except ParseError as e:
-                    # Trigger: a fenced frontmatter block cannot be parsed safely.
-                    # Why: Markdown is authoritative, and a partial update cannot know
-                    # which malformed metadata fields the user intended to preserve.
-                    # Outcome: reject the rewrite before any bytes are changed.
-                    raise FileOperationError(
-                        f"Refusing to update malformed frontmatter in {full_path}: {e}"
-                    ) from e
-                content = file_utils.remove_frontmatter(content)
+            string_updates = (
+                {key: value for key, value in updates.items() if isinstance(value, str)}
+                if updates and all(isinstance(value, str) for value in updates.values())
+                else None
+            )
+            # Trigger: the update is only string fields, such as a permalink insert.
+            # Why: yaml.dump rewrites timestamps, yes/true, flow lists, and content.strip()
+            # drops trailing blank lines. A first index must not restyle the vault.
+            # Outcome: only the named lines change; every other byte stays identical.
+            if string_updates is not None:
+                if file_utils.has_frontmatter(content):
+                    try:
+                        file_utils.parse_frontmatter(content)
+                    except ParseError as e:
+                        raise FileOperationError(
+                            f"Refusing to update malformed frontmatter in {full_path}: {e}"
+                        ) from e
+                    final_content = write_frontmatter_lines(content, string_updates)
+                else:
+                    final_content = prepend_frontmatter_block(content, string_updates)
+            else:
+                current_fm = {}
+                if file_utils.has_frontmatter(content):
+                    try:
+                        current_fm = file_utils.parse_frontmatter(content)
+                    except ParseError as e:
+                        # Trigger: a fenced frontmatter block cannot be parsed safely.
+                        # Why: Markdown is authoritative, and a partial update cannot know
+                        # which malformed metadata fields the user intended to preserve.
+                        # Outcome: reject the rewrite before any bytes are changed.
+                        raise FileOperationError(
+                            f"Refusing to update malformed frontmatter in {full_path}: {e}"
+                        ) from e
+                    content = file_utils.remove_frontmatter(content)
 
-            # Update frontmatter
-            new_fm = {**current_fm, **updates}
-
-            # Write new file with updated frontmatter
-            yaml_fm = yaml.dump(new_fm, sort_keys=False, allow_unicode=True)
-            final_content = f"---\n{yaml_fm}---\n\n{content.strip()}"
+                new_fm = {**current_fm, **updates}
+                yaml_fm = yaml.dump(new_fm, sort_keys=False, allow_unicode=True)
+                final_content = f"---\n{yaml_fm}---\n\n{content.strip()}"
 
             logger.debug(
                 "Updating frontmatter", path=str(full_path), update_keys=list(updates.keys())

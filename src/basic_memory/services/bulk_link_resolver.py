@@ -17,6 +17,7 @@ from basic_memory.services.link_resolver import normalize_link_text
 from basic_memory.utils import (
     build_permalink_resolution_candidates,
     generate_permalink,
+    own_project_remainder,
     normalize_project_reference,
 )
 from basic_memory.workspace_context import current_workspace_permalink_context
@@ -267,6 +268,27 @@ class BulkLinkResolutionSnapshot:
             return current_match.entity
         if current_match.ambiguous:
             return None
+
+        # Trigger: the target is qualified with this project's own routing prefix
+        #   (`[[main/assets/a.txt]]`, `[[team-paul/main/Some Title]]`).
+        # Why: permalink candidates strip that prefix, but title and file-path
+        #   lookups saw the qualified text; a resource (permalink NULL) or a title
+        #   could never match, and every reindex repeated the miss.
+        # Outcome: the same strict lookups run on the project-relative remainder,
+        #   using the helper LinkResolver uses for its own-project retry.
+        own_remainder = own_project_remainder(
+            target.identifier,
+            current_index.project.permalink,
+            workspace_permalink=self.workspace_permalink,
+        )
+        if own_remainder:
+            own_match = current_index.resolve_strict(
+                own_remainder,
+                include_project_permalinks=self.include_project_permalinks,
+                workspace_permalink=self.workspace_permalink,
+            )
+            if own_match.entity is not None or own_match.ambiguous:
+                return own_match.entity
 
         if referenced_project is None or referenced_project.id == self.current_project_id:
             return None

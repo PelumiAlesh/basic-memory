@@ -17,6 +17,7 @@ from basic_memory.config import ConfigManager
 from basic_memory.utils import (
     build_canonical_permalink,
     coerce_dict,
+    generate_permalink,
     parse_str_list,
     parse_tags,
     strict_search_tags,
@@ -52,6 +53,19 @@ _NO_SEARCH_CRITERIA_MESSAGE = (
 # pass "note_type" (the entity model column) when the frontmatter field is "type".
 _METADATA_KEY_ALIASES = {"note_type": "type"}
 _VALID_SEARCH_TYPES = ("hybrid", "permalink", "semantic", "text", "title", "vector")
+# Frontmatter statuses search_exclude_inactive leaves out of discovery search.
+INACTIVE_NOTE_STATUSES = ("superseded", "archived")
+
+
+def inactive_statuses_to_exclude(include_inactive: bool) -> tuple[str, ...]:
+    """The statuses discovery search leaves out: none unless search_exclude_inactive is on."""
+    if include_inactive:
+        return ()
+    try:
+        config = get_container().config
+    except RuntimeError:
+        config = ConfigManager().config
+    return INACTIVE_NOTE_STATUSES if config.search_exclude_inactive else ()
 
 
 def _build_search_query(
@@ -69,6 +83,7 @@ def _build_search_query(
     valid_at: str | None,
     valid_overlaps: str | None,
     time_kind: str | None,
+    exclude_statuses: tuple[str, ...] = (),
 ) -> SearchQuery | None:
     """Map tool parameters onto one ``SearchQuery``; ``None`` when nothing narrows the search.
 
@@ -133,6 +148,16 @@ def _build_search_query(
 
     if search_query.no_criteria():
         return None
+
+    # Trigger: search_exclude_inactive is on and the caller did not pass include_inactive.
+    # Why: an exact permalink names one note, and a status filter asks about statuses
+    #      directly; hiding superseded notes from either would answer another question.
+    # Outcome: discovery searches drop superseded and archived notes, lookups keep them.
+    asks_about_status = bool(search_query.status) or "status" in (
+        search_query.metadata_filters or {}
+    )
+    if exclude_statuses and search_query.permalink is None and not asks_about_status:
+        search_query.exclude_statuses = list(exclude_statuses)
 
     # Default to entity-level results to avoid returning individual
     # observations/relations as separate search results (see issue #31).
@@ -242,7 +267,7 @@ def _format_search_error_response(
 
             ## Alternative now
             - Run FTS search instead:
-              `search_notes("{project}", "{query}", search_type="text")`
+              `search_notes(query="{query}", project="{project}", search_type="text")`
             """).strip()
 
     if "pip install" in error_message.lower() and "semantic" in error_message.lower():
@@ -255,7 +280,7 @@ def _format_search_error_response(
             1. Install/update Basic Memory: `pip install -U basic-memory`
             2. Restart Basic Memory
             3. Retry your query:
-               `search_notes("{project}", "{query}", search_type="{search_type}")`
+               `search_notes(query="{query}", project="{project}", search_type="{search_type}")`
             """).strip()
 
     # Corrupt/missing FastEmbed model cache (interrupted download leaves a partial
@@ -292,11 +317,11 @@ def _format_search_error_response(
             1. Delete the FastEmbed model cache so it re-downloads on the next search:
                `{cache_dir}`
             2. Run your search again (the model downloads automatically on first use):
-               `search_notes("{project}", "{query}", search_type="{search_type}")`
+               `search_notes(query="{query}", project="{project}", search_type="{search_type}")`
 
             ## Workaround right now
             - Use full-text search, which needs no embedding model:
-              `search_notes("{project}", "{query}", search_type="text")`
+              `search_notes(query="{query}", project="{project}", search_type="text")`
             """).strip()
 
     # FTS5 syntax errors
@@ -334,13 +359,13 @@ def _format_search_error_response(
 
             ## Try again with:
             ```
-            search_notes("{project}","{clean_query}")
+            search_notes(query="{clean_query}", project="{project}")
             ```
 
             ## Alternative search strategies:
-            - Break into simpler terms: `search_notes("{project}", "{" ".join(clean_query.split()[:2])}")`
-            - Try different search types: `search_notes("{project}","{clean_query}", search_type="title")`
-            - Use filtering: `search_notes("{project}","{clean_query}", note_types=["note"])`
+            - Break into simpler terms: `search_notes(query="{" ".join(clean_query.split()[:2])}", project="{project}")`
+            - Try different search types: `search_notes(query="{clean_query}", project="{project}", search_type="title")`
+            - Use filtering: `search_notes(query="{clean_query}", project="{project}", note_types=["note"])`
             """).strip()
 
     # Project not found errors (check before general "not found")
@@ -351,11 +376,11 @@ def _format_search_error_response(
             The current project is not accessible or doesn't exist: {error_message}
 
             ## How to resolve:
-            1. **Check available projects**: `list_projects()`
+            1. **Check available projects**: `list_memory_projects()`
             3. **Verify project setup**: Ensure your project is properly configured
 
             ## Current session info:
-            - See available projects: `list_projects()`
+            - See available projects: `list_memory_projects()`
             """).strip()
 
     # No results found
@@ -382,28 +407,28 @@ def _format_search_error_response(
                - Try synonyms or related terms
 
             3. **Use different search approaches**:
-               - **Text search**: `search_notes("{project}","{query}", search_type="text")` (searches full content)
-               - **Title search**: `search_notes("{project}","{query}", search_type="title")` (searches only titles)
-               - **Permalink search**: `search_notes("{project}","{query}", search_type="permalink")` (searches file paths)
+               - **Text search**: `search_notes(query="{query}", project="{project}", search_type="text")` (searches full content)
+               - **Title search**: `search_notes(query="{query}", project="{project}", search_type="title")` (searches only titles)
+               - **Permalink search**: `search_notes(query="{query}", project="{project}", search_type="permalink")` (searches file paths)
 
             4. **Try boolean operators for broader results**:
-               - OR search: `search_notes("{project}","{" OR ".join(query.split()[:3])}")`
+               - OR search: `search_notes(query="{" OR ".join(query.split()[:3])}", project="{project}")`
                - Remove restrictive terms: Focus on the most important keywords
 
             5. **Use filtering to narrow scope**:
-               - By note type in frontmatter: `search_notes("{project}","{query}", note_types=["note"])`
-               - By recent content: `search_notes("{project}","{query}", after_date="1 week")`
-               - By entity type: `search_notes("{project}","{query}", entity_types=["observation"])`
+               - By note type in frontmatter: `search_notes(query="{query}", project="{project}", note_types=["note"])`
+               - By recent content: `search_notes(query="{query}", project="{project}", after_date="1 week")`
+               - By entity type: `search_notes(query="{query}", project="{project}", entity_types=["observation"])`
 
             6. **Try advanced search patterns**:
-               - Tag search: `search_notes("{project}","tag:your-tag")`
-               - Observation category: `search_notes("{project}","{query}", entity_types=["observation"], categories=["requirement"])`
-               - Pattern matching: `search_notes("{project}","*{query}*", search_type="permalink")`
+               - Tag search: `search_notes(query="tag:your-tag", project="{project}")`
+               - Observation category: `search_notes(query="{query}", project="{project}", entity_types=["observation"], categories=["requirement"])`
+               - Pattern matching: `search_notes(query="*{query}*", project="{project}", search_type="permalink")`
 
             ## Explore what content exists:
             - **Recent activity**: `recent_activity(timeframe="7d")` - See what's been updated recently
-            - **List directories**: `list_directory("{project}","/")` - Browse all content
-            - **Browse by folder**: `list_directory("{project}","/notes")` or `list_directory("/docs")`
+            - **List directories**: `list_directory(dir_name="/", project="{project}")` - Browse all content
+            - **Browse by folder**: `list_directory(dir_name="/notes", project="{project}")` or `list_directory("/docs")`
             """).strip()
 
     # Server/API errors
@@ -419,9 +444,9 @@ def _format_search_error_response(
             3. **Check project status**: Ensure your project is properly synced
 
             ## Alternative approaches:
-            - Browse files directly: `list_directory("{project}","/")`
+            - Browse files directly: `list_directory(dir_name="/", project="{project}")`
             - Check recent activity: `recent_activity(timeframe="7d")`
-            - Try a different search type: `search_notes("{project}","{query}", search_type="title")`
+            - Try a different search type: `search_notes(query="{query}", project="{project}", search_type="title")`
 
             ## If the problem persists:
             The search index might need to be rebuilt. Send a message to support@basicmachines.co or check the project sync status.
@@ -443,7 +468,7 @@ You don't have permission to search in the current project: {error_message}
 3. **Check authentication**: You might need to re-authenticate
 
 ## Alternative actions:
-- List available projects: `list_projects()`"""
+- List available projects: `list_memory_projects()`"""
 
     # Generic fallback
     return f"""# Search Failed
@@ -458,16 +483,16 @@ Error searching for '{query}': {error_message}
 
 ## Alternative search approaches:
 - **Different search types**: 
-  - Title only: `search_notes("{project}","{query}", search_type="title")`
-  - Permalink patterns: `search_notes("{project}","{query}*", search_type="permalink")`
-- **With filters**: `search_notes("{project}","{query}", note_types=["note"])`
-- **Recent content**: `search_notes("{project}","{query}", after_date="1 week")`
-- **Boolean variations**: `search_notes("{project}","{" OR ".join(query.split()[:2])}")`
+  - Title only: `search_notes(query="{query}", project="{project}", search_type="title")`
+  - Permalink patterns: `search_notes(query="{query}*", project="{project}", search_type="permalink")`
+- **With filters**: `search_notes(query="{query}", project="{project}", note_types=["note"])`
+- **Recent content**: `search_notes(query="{query}", project="{project}", after_date="1 week")`
+- **Boolean variations**: `search_notes(query="{" OR ".join(query.split()[:2])}", project="{project}")`
 
 ## Explore your content:
-- **Browse files**: `list_directory("{project}","/")` - See all available content
+- **Browse files**: `list_directory(dir_name="/", project="{project}")` - See all available content
 - **Recent activity**: `recent_activity(timeframe="7d")` - Check what's been updated
-- **All projects**: `list_projects()` 
+- **All projects**: `list_memory_projects()` 
 
 ## Search syntax reference:
 - **Basic**: `keyword` or `multiple words`
@@ -579,21 +604,32 @@ def _valid_project_id(value: object) -> str | None:
         return None
 
 
+def _names_project(token: str, *spellings: object) -> bool:
+    """Return True when a caller's project token names one of a project's spellings.
+
+    Project routing matches names by permalink (#1388), so `ALPHA` and `alpha`
+    are the same project there. Search scoping compared exact strings, which made
+    a case-mismatched BASIC_MEMORY_MCP_PROJECT or `projects=["BETA"]` see no
+    projects at all (#1630).
+    """
+    token_permalink = generate_permalink(token.strip())
+    return any(
+        isinstance(spelling, str) and generate_permalink(spelling) == token_permalink
+        for spelling in spellings
+    )
+
+
 def _matches_constrained_project(project: dict[str, Any], constrained_project: object) -> bool:
     """Return True when a project list row satisfies BASIC_MEMORY_MCP_PROJECT."""
     if not isinstance(constrained_project, str) or not constrained_project.strip():
         return True
 
-    candidates = {
-        value
-        for value in (
-            project.get("name"),
-            project.get("qualified_name"),
-            project.get("external_id"),
-        )
-        if isinstance(value, str)
-    }
-    return constrained_project in candidates
+    return _names_project(
+        constrained_project,
+        project.get("name"),
+        project.get("qualified_name"),
+        project.get("external_id"),
+    )
 
 
 @dataclass(frozen=True)
@@ -672,7 +708,9 @@ def _select_project_refs(
     unknown: list[str] = []
     for requested in projects:
         token = requested.strip()
-        matches = [ref for ref in refs if token in (ref.name, ref.bare_name, ref.external_id)]
+        matches = [
+            ref for ref in refs if _names_project(token, ref.name, ref.bare_name, ref.external_id)
+        ]
         if not matches:
             unknown.append(token)
             continue
@@ -805,6 +843,7 @@ async def _search_all_projects(
     context: Context | None,
     compact: bool = False,
     projects: list[str] | None = None,
+    exclude_statuses: tuple[str, ...] = (),
 ) -> dict[str, Any] | str:
     """Search every accessible project, one query per database.
 
@@ -851,6 +890,7 @@ async def _search_all_projects(
         valid_at=valid_at,
         valid_overlaps=valid_overlaps,
         time_kind=time_kind,
+        exclude_statuses=exclude_statuses,
     )
     if search_query is None:
         return _NO_SEARCH_CRITERIA_MESSAGE
@@ -974,7 +1014,22 @@ async def _search_all_projects(
 
 @mcp.tool(
     title="Search Notes",
-    description="Search across all content in the knowledge base with advanced syntax support.",
+    description=(
+        "Search notes, observations, and relations in one project, or in several with "
+        "`projects` / `search_all_projects`. The query supports quoted phrases, AND/OR/NOT "
+        "with parentheses, and `tag:name` (converted to a tags filter). A plain multi-term "
+        "query first requires every term and may fall back to any-term matching when that "
+        "returns nothing. `search_type` selects text, title, permalink (a `*` glob matched "
+        "against the full permalink path), vector/semantic, or hybrid; the default is hybrid "
+        "when semantic search is enabled, otherwise text. Omit `query` to search by filters "
+        "alone (metadata_filters, tags, status, note_types). Results are whole notes by "
+        "default; a `categories` or valid-time filter switches the default to observations. "
+        "`after_date` filters by when content was last updated. `valid_at` / "
+        "`valid_overlaps` / `time_kind` filter by dates written inside notes (e.g. "
+        "`@effective[2026-06-10,2026-07-27)`) and exclude undated content. Returns ranked, "
+        "paginated results; read full content with read_note or cat. Syntax reference: "
+        "memory://man/search-notes(3)."
+    ),
     tags={"search"},
     # TODO: re-enable once MCP client rendering is working
     # meta={"ui/resourceUri": "ui://basic-memory/search-results"},
@@ -1116,6 +1171,12 @@ async def search_notes(
         "Omit note bodies and matched excerpts from results. Keep identifiers, metadata, "
         "relation targets, scores and pagination for discovery, then read selected notes.",
     ] = False,
+    include_inactive: Annotated[
+        bool,
+        "Include notes whose frontmatter status is superseded or archived. Only matters "
+        "when the search_exclude_inactive setting is on; exact permalink searches and "
+        "status filters always include them.",
+    ] = False,
 ) -> dict[str, Any] | str:
     """Search across all content in the knowledge base with comprehensive syntax support.
 
@@ -1228,11 +1289,11 @@ async def search_notes(
 
     These filters query that authored time, which is a different axis from `after_date`
     (last-indexed time) — `after_date` is never reinterpreted as valid time.
-    - `search_notes("cache layer", kind="effective", valid_at="2026-07-28")`
+    - `search_notes("cache layer", time_kind="effective", valid_at="2026-07-28")`
       - Returns the Memcached decision; the Redis decision expired at the cutover.
-    - `search_notes("cache layer", kind="effective", valid_at="2026-07-01")`
+    - `search_notes("cache layer", time_kind="effective", valid_at="2026-07-01")`
       - Returns the Redis decision; Memcached is not yet effective.
-    - `search_notes("cache layer", kind="effective", valid_overlaps="[2026-06-01,2026-08-01)")`
+    - `search_notes("cache layer", time_kind="effective", valid_overlaps="[2026-06-01,2026-08-01)")`
       - Returns both, since each overlaps that window.
     - `search_notes("cache layer")` with no valid-time filter
       - Both compete under ordinary relevance, exactly as before.
@@ -1279,13 +1340,17 @@ async def search_notes(
         search_type: Type of search to perform, one of:
                     "text", "title", "permalink", "vector", "semantic", "hybrid".
                     Default is dynamic: "hybrid" when semantic search is enabled, otherwise "text".
-        output_format: "text" preserves existing structured search response behavior.
-            "json" returns a machine-readable dictionary payload.
-        note_types: Optional list of note types to search (e.g., ["note", "person"])
-        entity_types: Optional list of entity types to filter by (e.g., ["entity", "observation"])
-        categories: Optional list of observation categories for exact matching (e.g.,
-                   ["requirement"]). Pair with entity_types=["observation"] to return only
-                   observations whose category matches exactly.
+        output_format: "text" returns a formatted markdown result list. "json" returns a
+            machine-readable dictionary payload.
+        note_types: Filter by the frontmatter `type` field (e.g. "note", "person").
+            Case-insensitive. Accepts a list, a comma-separated string, or a JSON-array string.
+        entity_types: Knowledge-graph item types to return: "entity" (whole notes),
+            "observation", "relation". Defaults to entity, or to observation when categories
+            or a valid-time filter is given. Not the frontmatter `type` (use note_types for
+            that). Accepts a list, a comma-separated string, or a JSON-array string.
+        categories: Observation categories to match exactly (e.g. ["requirement"]). Implies
+            observation results unless entity_types is set. Accepts a list, a
+            comma-separated string, or a JSON-array string.
         after_date: Optional date filter for recent content (e.g., "1 week", "2d", "2024-01-01")
         metadata_filters: Optional structured frontmatter filters (e.g., {"status": "in-progress"}).
                 Integer values match integer YAML fields ({"section": 3} works).
@@ -1312,6 +1377,9 @@ async def search_notes(
         context: Optional FastMCP context for performance caching.
         compact: Omit content and matched excerpts in either output format. Defaults to False.
                  Use returned note identifiers with read_note for content verification.
+        include_inactive: Include notes whose frontmatter status is superseded or archived.
+                 Only matters when the search_exclude_inactive setting is on (it is off by
+                 default). Exact permalink searches and status filters always include them.
 
     Returns:
         Formatted markdown text (output_format="text"), dict (output_format="json"),
@@ -1476,6 +1544,8 @@ async def search_notes(
             # different accessible workspace holding the same permalink (#1432).
             project, project_id = detected.project, detected.project_id
 
+    exclude_statuses = inactive_statuses_to_exclude(include_inactive)
+
     # Trigger: caller explicitly requests account/workspace-wide search and did not
     # already provide a concrete project route.
     # Why: multi-project fan-out can be slow, so default search remains project-scoped.
@@ -1501,6 +1571,7 @@ async def search_notes(
             context=context,
             compact=compact,
             projects=projects,
+            exclude_statuses=exclude_statuses,
         )
         return all_projects_result
 
@@ -1570,6 +1641,7 @@ async def search_notes(
                     valid_at=valid_at,
                     valid_overlaps=valid_overlaps,
                     time_kind=time_kind,
+                    exclude_statuses=exclude_statuses,
                 )
                 if search_query is None:
                     return _NO_SEARCH_CRITERIA_MESSAGE

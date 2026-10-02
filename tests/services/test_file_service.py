@@ -229,6 +229,62 @@ async def test_update_frontmatter_rejects_malformed_yaml_without_changing_file(
 
 
 @pytest.mark.asyncio
+async def test_permalink_insert_changes_only_the_permalink_line(
+    tmp_path: Path, file_service: FileService
+):
+    """A permalink insert must not restyle the rest of the note."""
+    original = (
+        "---\n"
+        "title: Plan\n"
+        "updated: 2024-03-01T09:30:00Z\n"
+        "draft: yes\n"
+        "tags: [a, b]\n"
+        "---\n"
+        "\n"
+        "# Plan\n"
+        "\n"
+        "Body stays.\n"
+        "\n"
+        "\n"
+    )
+    test_path = tmp_path / "plan.md"
+    test_path.write_text(original, encoding="utf-8")
+
+    result = await file_service.update_frontmatter_with_result(
+        test_path, {"permalink": "plans/plan"}
+    )
+
+    written = test_path.read_text(encoding="utf-8")
+    assert result.content == written
+    without_permalink = "".join(
+        line for line in written.splitlines(keepends=True) if not line.startswith("permalink:")
+    )
+    assert without_permalink == original
+    assert "updated: 2024-03-01T09:30:00Z\n" in written
+    assert "draft: yes\n" in written
+    assert "tags: [a, b]\n" in written
+
+
+@pytest.mark.asyncio
+async def test_permalink_prepend_keeps_body_bytes(tmp_path: Path, file_service: FileService):
+    """A note with no fence keeps its body, including trailing blank lines."""
+    body = "# Plain\n\nKeep me.\n\n\n"
+    test_path = tmp_path / "plain.md"
+    test_path.write_text(body, encoding="utf-8")
+
+    result = await file_service.update_frontmatter_with_result(
+        test_path,
+        {"title": "Plain", "type": "note", "permalink": "plain"},
+    )
+
+    written = test_path.read_text(encoding="utf-8")
+    assert result.content == written
+    assert written.endswith(body)
+    assert written.index(body) > 0
+    assert "permalink:" in written[: written.index(body)]
+
+
+@pytest.mark.asyncio
 async def test_read_file_content(tmp_path: Path, file_service: FileService):
     """Test read_file_content returns just the content without checksum."""
     test_path = tmp_path / "test.md"

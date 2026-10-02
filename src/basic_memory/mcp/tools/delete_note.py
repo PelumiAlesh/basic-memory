@@ -1,5 +1,6 @@
+import json
 from textwrap import dedent
-from typing import Any, Annotated, Optional, Literal
+from typing import Any, Annotated, NoReturn, Optional, Literal
 
 from loguru import logger
 from fastmcp import Context
@@ -7,6 +8,18 @@ from fastmcp.exceptions import ToolError
 from pydantic import AliasChoices, Field
 
 from basic_memory.config import ConfigManager
+from basic_memory.mcp.write_verification import (
+    is_verification_failure,
+    raise_if_verification_failed,
+    verify_note_delete,
+)
+from basic_memory.schemas.response import DirectoryDeleteError, DirectoryDeleteResult
+from basic_memory.shared_memory.file_history import FileSnapshot
+from basic_memory.shared_memory.write_safety import (
+    assert_snapshot_current,
+    snapshot_local_directory,
+    snapshot_local_note,
+)
 from basic_memory.mcp.project_context import (
     detect_project_from_memory_url_prefix,
     get_project_client,
@@ -19,10 +32,15 @@ from basic_memory.workspace_context import current_workspace_permalink_context
 
 
 def _format_delete_error_response(project: str, error_message: str, identifier: str) -> str:
-    """Format helpful error responses for delete failures that guide users to successful deletions."""
+    """Format delete failures as facts plus keyword-exact recovery calls.
+
+    Every suggested call spells out its keywords: the first positional parameter of
+    delete_note is the note identifier, so a positional hint could delete the wrong note.
+    """
+    lowered = error_message.lower()
 
     # Note not found errors
-    if "entity not found" in error_message.lower() or "not found" in error_message.lower():
+    if "entity not found" in lowered or "not found" in lowered:
         search_term = identifier.split("/")[-1] if "/" in identifier else identifier
         title_format = (
             identifier.split("/")[-1].replace("-", " ").title() if "/" in identifier else identifier
@@ -33,126 +51,115 @@ def _format_delete_error_response(project: str, error_message: str, identifier: 
             # Delete Failed - Note Not Found
 
             The note '{identifier}' could not be found for deletion in {project}.
+            It may already be deleted, the identifier may not match exactly, or the note
+            may live in a different project.
 
-            ## This might mean:
-            1. **Already deleted**: The note may have been deleted previously
-            2. **Wrong identifier**: The identifier format might be incorrect
-            3. **Different project**: The note might be in a different project
+            delete_note needs an exact title or permalink. Alternate forms of this
+            identifier: title "{title_format}", permalink "{permalink_format}".
 
-            ## How to verify:
-            1. **Search for the note**: Use `search_notes("{project}", "{search_term}")` to find it
-            2. **Try different formats**:
-               - If you used a permalink like "folder/note-title", try just the title: "{title_format}"
-               - If you used a title, try the permalink format: "{permalink_format}"
-
-            3. **Check if already deleted**: Use `list_directory("/")` to see what notes exist
-            4. **List notes in project**: Use `list_directory("/")` to see what notes exist in the current project
-
-            ## If the note actually exists:
-            ```
-            # First, find the correct identifier:
-            search_notes("{project}", "{identifier}")
-
-            # Then delete using the correct identifier:
-            delete_note("{project}", "correct-identifier-from-search")
-            ```
-
-            ## If you want to delete multiple similar notes:
-            Use search to find all related notes and delete them one by one.
+            Find the exact identifier with
+            `search_notes(query="{search_term}", project="{project}")` or
+            `list_directory(dir_name="/", project="{project}")`, then retry
+            `delete_note(identifier="...", project="{project}")`.
             """).strip()
 
     # Permission/access errors
-    if (
-        "permission" in error_message.lower()
-        or "access" in error_message.lower()
-        or "forbidden" in error_message.lower()
-    ):
-        return f"""# Delete Failed - Permission Error
+    if "permission" in lowered or "access" in lowered or "forbidden" in lowered:
+        return dedent(f"""
+            # Delete Failed - Permission Error
 
-You don't have permission to delete '{identifier}': {error_message}
+            No write access to delete '{identifier}' in {project}: {error_message}
 
-## How to resolve:
-1. **Check permissions**: Verify you have delete/write access to this project
-2. **File locks**: The note might be open in another application
-3. **Project access**: Ensure you're in the correct project with proper permissions
-
-## Alternative actions:
-- List available projects: `list_memory_projects()`
-- Specify the correct project: `delete_note("{identifier}", project="project-name")`
-- Verify note exists first: `read_note("{identifier}", project="project-name")`
-
-## If you have read-only access:
-Ask someone with write access to delete the note."""
+            The note may be open or locked by another application, or this account may
+            have read-only access to the project. `list_memory_projects()` shows the
+            projects this account can reach.
+            """).strip()
 
     # Server/filesystem errors
-    if (
-        "server error" in error_message.lower()
-        or "filesystem" in error_message.lower()
-        or "disk" in error_message.lower()
-    ):
-        return f"""# Delete Failed - System Error
+    if "server error" in lowered or "filesystem" in lowered or "disk" in lowered:
+        return dedent(f"""
+            # Delete Failed - System Error
 
-A system error occurred while deleting '{identifier}': {error_message}
+            A system error occurred while deleting '{identifier}' in {project}: {error_message}
 
-## Immediate steps:
-1. **Try again**: The error might be temporary
-2. **Check file status**: Verify the file isn't locked or in use
-3. **Check disk space**: Ensure the system has adequate storage
-
-## Troubleshooting:
-- Verify note exists: `read_note("{project}","{identifier}")`
-- Try again in a few moments
-
-## If problem persists:
-Send a message to support@basicmachines.co - there may be a filesystem or database issue."""
+            The error may be transient (a locked file or low disk space). Check whether the
+            note still exists with `read_note(identifier="{identifier}", project="{project}")`
+            before retrying. If it persists, contact support@basicmemory.com.
+            """).strip()
 
     # Database/sync errors
-    if "database" in error_message.lower() or "sync" in error_message.lower():
-        return f"""# Delete Failed - Database Error
+    if "database" in lowered or "sync" in lowered:
+        return dedent(f"""
+            # Delete Failed - Database Error
 
-A database error occurred while deleting '{identifier}': {error_message}
+            A database error occurred while deleting '{identifier}' in {project}: {error_message}
 
-## This usually means:
-1. **Sync conflict**: The file system and database are out of sync
-2. **Database lock**: Another operation is accessing the database
-3. **Corrupted entry**: The database entry might be corrupted
-
-## Steps to resolve:
-1. **Try again**: Wait a moment and retry the deletion
-2. **Check note status**: `read_note("{project}","{identifier}")` to see current state
-3. **Manual verification**: Use `list_directory()` to see if file still exists
-
-## If the note appears gone but database shows it exists:
-Send a message to support@basicmachines.co - a manual database cleanup may be needed."""
+            The file and the index may be out of sync, or another operation may hold a
+            database lock. Check the note's current state with
+            `read_note(identifier="{identifier}", project="{project}")` before retrying. If
+            the file is gone but the index still lists it, contact support@basicmemory.com.
+            """).strip()
 
     # Generic fallback
-    return f"""# Delete Failed
+    return dedent(f"""
+        # Delete Failed
 
-Error deleting note '{identifier}': {error_message}
+        Error deleting note '{identifier}' in {project}: {error_message}
 
-## General troubleshooting:
-1. **Verify the note exists**: `read_note("{project}", "{identifier}")` or `search_notes("{project}", "{identifier}")`
-2. **Check permissions**: Ensure you can edit/delete files in this project
-3. **Try again**: The error might be temporary
-4. **Check project**: Make sure you're in the correct project
+        Confirm the exact identifier with
+        `search_notes(query="{identifier}", project="{project}")` before retrying. If the
+        operation keeps failing, contact support@basicmemory.com.
+        """).strip()
 
-## Step-by-step approach:
-```
-# 1. Confirm note exists and get correct identifier
-search_notes("{project}", "{identifier}")
 
-# 2. Read the note to verify access
-read_note("{project}", "correct-identifier-from-search")
+def _local_project_home(home: object) -> bool:
+    from pathlib import Path
 
-# 3. Try deletion with correct identifier
-delete_note("{project}", "correct-identifier-from-search")
-```
+    return isinstance(home, (str, Path)) and Path(home).is_dir()
 
-## Alternative approaches:
-- Check what notes exist: `list_directory("{project}", "/")`
 
-## Need help?
-If the note should be deleted but the operation keeps failing, send a message to support@basicmemory.com."""
+async def _delete_snapshotted_paths(
+    knowledge_client: Any,
+    project_home: object,
+    snapshots: tuple[FileSnapshot, ...],
+) -> DirectoryDeleteResult:
+    """Delete the entities whose files were copied, and no others.
+
+    A path whose bytes changed after the copy is left in place. A path that was
+    not in the snapshot is not deleted, including a file created during the walk.
+    """
+    deleted_files: list[str] = []
+    errors: list[DirectoryDeleteError] = []
+    for snapshot in snapshots:
+        try:
+            assert_snapshot_current(project_home, snapshot)
+            entity_id = await knowledge_client.resolve_entity(snapshot.relative_path, strict=True)
+            outcome = await knowledge_client.delete_entity(entity_id)
+        except ToolError as error:
+            errors.append(DirectoryDeleteError(path=snapshot.relative_path, error=str(error)))
+            continue
+        if outcome.deleted:
+            deleted_files.append(snapshot.relative_path)
+        else:
+            errors.append(
+                DirectoryDeleteError(path=snapshot.relative_path, error="Delete returned False")
+            )
+    return DirectoryDeleteResult(
+        total_files=len(snapshots),
+        successful_deletes=len(deleted_files),
+        failed_deletes=len(errors),
+        deleted_files=deleted_files,
+        errors=errors,
+    )
+
+
+def _raise_delete_failure(output_format: str, payload: dict[str, Any], text: str) -> NoReturn:
+    """Report a failed delete as a tool error, keeping the guidance for the caller.
+
+    A returned "Delete Failed" string reads as success to MCP clients; raising makes
+    the result an error (isError) while the message still carries the same help.
+    """
+    raise ToolError(json.dumps(payload) if output_format == "json" else text)
 
 
 def _directory_path_for_delete(
@@ -183,7 +190,11 @@ def _directory_path_for_delete(
 
 @mcp.tool(
     title="Delete Note",
-    description="Delete a note or directory by title, permalink, or path",
+    description=(
+        "Delete a note or directory by title, permalink, or path. Deletion is permanent "
+        "and removes the file. With is_directory=True every file under the path is "
+        "deleted. A missing note returns false rather than an error."
+    ),
     tags={"notes"},
     annotations={
         "title": "Delete Note",
@@ -226,14 +237,15 @@ async def delete_note(
         project_id: Project external_id (UUID). Prefer this over `project` when known —
                 it routes to the exact project regardless of name collisions across cloud
                 workspaces. Takes precedence over `project`. Get from list_memory_projects().
-        output_format: "text" preserves existing behavior (bool/string). "json"
+        output_format: "text" returns true/false for a single note (false if not found),
+            a markdown summary for directories, or markdown guidance on error. "json"
             returns machine-readable deletion metadata.
         context: Optional FastMCP context for performance caching.
 
     Returns:
         True if note was successfully deleted, False if note was not found.
         For directories, returns a formatted summary of deleted files.
-        On errors, returns a formatted string with helpful troubleshooting guidance.
+        On errors, raises a tool error whose message carries troubleshooting guidance.
 
     Examples:
         # Delete by title
@@ -310,88 +322,37 @@ async def delete_note(
 
         # Handle directory deletes
         if is_directory:
+            # Trigger: directory input was routed from a memory:// URL.
+            # Why: resolve_project_and_path returns canonical permalinks, while
+            #   delete_directory filters by project-relative file_path prefixes.
+            # Outcome: strip only the route prefix before the snapshot and the delete.
+            directory_identifier = (
+                _directory_path_for_delete(
+                    target_identifier,
+                    active_project,
+                    include_project_prefix=ConfigManager().config.permalinks_include_project,
+                )
+                if is_memory_url
+                else target_identifier
+            )
+            # Snapshot every child before the API delete. This stays outside the
+            # error formatter below: a failed copy raises ToolError and must not
+            # become a message returned after the files are already gone.
+            # A local project then deletes only those copied paths. delete_directory
+            # lists again, so a file created in the gap would be removed with no copy.
+            snapshots = snapshot_local_directory(active_project.home, directory_identifier)
             try:
-                # Trigger: directory input was routed from a memory:// URL.
-                # Why: resolve_project_and_path returns canonical permalinks, while
-                #   delete_directory filters by project-relative file_path prefixes.
-                # Outcome: strip only the route prefix before calling the delete API.
-                directory_identifier = (
-                    _directory_path_for_delete(
-                        target_identifier,
-                        active_project,
-                        include_project_prefix=ConfigManager().config.permalinks_include_project,
+                if _local_project_home(active_project.home):
+                    result = await _delete_snapshotted_paths(
+                        knowledge_client, active_project.home, snapshots
                     )
-                    if is_memory_url
-                    else target_identifier
-                )
-                result = await knowledge_client.delete_directory(directory_identifier)
-                if output_format == "json":
-                    response = {
-                        "deleted": result.total_files > 0 and result.failed_deletes == 0,
-                        "is_directory": True,
-                        "identifier": identifier,
-                        "total_files": result.total_files,
-                        "successful_deletes": result.successful_deletes,
-                        "failed_deletes": result.failed_deletes,
-                        "deleted_files": result.deleted_files,
-                        "errors": [error.model_dump() for error in result.errors],
-                    }
-                    if result.total_files == 0:
-                        response["error"] = "Directory not found or empty: no files matched"
-                    elif result.failed_deletes > 0:
-                        response["error"] = (
-                            "Directory delete incomplete: "
-                            f"{result.failed_deletes} of {result.total_files} file(s) failed"
-                        )
-                    return response
-
-                if result.total_files == 0:
-                    return f"""# Directory Delete Failed - No Files Found
-
-No files found for directory `{identifier}`.
-Total files: 0.
-
-<!-- Project: {active_project.name} -->"""
-
-                # Build success message for directory delete
-                result_lines = [
-                    "# Directory Deleted Successfully",
-                    "",
-                    f"**Directory:** `{identifier}`",
-                    "",
-                    "## Summary",
-                    f"- Total files: {result.total_files}",
-                    f"- Successfully deleted: {result.successful_deletes}",
-                    f"- Failed: {result.failed_deletes}",
-                ]
-
-                if result.deleted_files:
-                    result_lines.extend(["", "## Deleted Files"])
-                    for file_path in result.deleted_files[:10]:  # Show first 10
-                        result_lines.append(f"- `{file_path}`")
-                    if len(result.deleted_files) > 10:
-                        result_lines.append(f"- ... and {len(result.deleted_files) - 10} more")
-
-                if result.errors:  # pragma: no cover
-                    result_lines.extend(["", "## Errors"])
-                    for error in result.errors[:5]:  # Show first 5 errors
-                        result_lines.append(f"- `{error.path}`: {error.error}")
-                    if len(result.errors) > 5:
-                        result_lines.append(f"- ... and {len(result.errors) - 5} more errors")
-
-                result_lines.extend(["", f"<!-- Project: {active_project.name} -->"])
-
-                logger.info(
-                    f"Directory delete completed: {identifier}, "
-                    f"deleted={result.successful_deletes}, failed={result.failed_deletes}"
-                )
-
-                return "\n".join(result_lines)
-
+                else:
+                    result = await knowledge_client.delete_directory(directory_identifier)
             except Exception as e:  # pragma: no cover
                 logger.error(f"Directory delete failed for '{identifier}': {e}")
-                if output_format == "json":
-                    return {
+                _raise_delete_failure(
+                    output_format,
+                    {
                         "deleted": False,
                         "is_directory": True,
                         "identifier": identifier,
@@ -399,8 +360,8 @@ Total files: 0.
                         "successful_deletes": 0,
                         "failed_deletes": 0,
                         "error": str(e),
-                    }
-                return f"""# Directory Delete Failed
+                    },
+                    f"""# Directory Delete Failed
 
 Error deleting directory '{identifier}': {str(e)}
 
@@ -416,7 +377,81 @@ list_directory("{identifier}")
 
 # Then delete individual files
 delete_note("path/to/file.md")
-```"""
+```""",
+                )
+
+            # --- Directory delete outcome ---
+            # delete_directory reports an empty match or per-file failures in its
+            # result rather than raising. Both are failures of the requested delete,
+            # so they are tool errors too; a partial delete keeps its full summary so
+            # the caller sees what was already removed before retrying.
+            response: dict[str, Any] = {
+                "deleted": result.total_files > 0 and result.failed_deletes == 0,
+                "is_directory": True,
+                "identifier": identifier,
+                "total_files": result.total_files,
+                "successful_deletes": result.successful_deletes,
+                "failed_deletes": result.failed_deletes,
+                "deleted_files": result.deleted_files,
+                "errors": [error.model_dump() for error in result.errors],
+            }
+
+            if result.total_files == 0:
+                response["error"] = "Directory not found or empty: no files matched"
+                _raise_delete_failure(
+                    output_format,
+                    response,
+                    f"""# Directory Delete Failed - No Files Found
+
+No files found for directory `{identifier}`.
+Total files: 0.
+
+<!-- Project: {active_project.name} -->""",
+                )
+
+            incomplete = result.failed_deletes > 0
+            result_lines = [
+                "# Directory Delete Incomplete"
+                if incomplete
+                else "# Directory Deleted Successfully",
+                "",
+                f"**Directory:** `{identifier}`",
+                "",
+                "## Summary",
+                f"- Total files: {result.total_files}",
+                f"- Successfully deleted: {result.successful_deletes}",
+                f"- Failed: {result.failed_deletes}",
+            ]
+
+            if result.deleted_files:
+                result_lines.extend(["", "## Deleted Files"])
+                for file_path in result.deleted_files[:10]:  # Show first 10
+                    result_lines.append(f"- `{file_path}`")
+                if len(result.deleted_files) > 10:
+                    result_lines.append(f"- ... and {len(result.deleted_files) - 10} more")
+
+            if result.errors:
+                result_lines.extend(["", "## Errors"])
+                for error in result.errors[:5]:  # Show first 5 errors
+                    result_lines.append(f"- `{error.path}`: {error.error}")
+                if len(result.errors) > 5:
+                    result_lines.append(f"- ... and {len(result.errors) - 5} more errors")
+
+            result_lines.extend(["", f"<!-- Project: {active_project.name} -->"])
+
+            logger.info(
+                f"Directory delete completed: {identifier}, "
+                f"deleted={result.successful_deletes}, failed={result.failed_deletes}"
+            )
+
+            if incomplete:
+                response["error"] = (
+                    "Directory delete incomplete: "
+                    f"{result.failed_deletes} of {result.total_files} file(s) failed"
+                )
+                _raise_delete_failure(output_format, response, "\n".join(result_lines))
+
+            return response if output_format == "json" else "\n".join(result_lines)
 
         # Handle single note deletes
         note_title = None
@@ -446,33 +481,78 @@ delete_note("path/to/file.md")
             logger.error(  # pragma: no cover
                 f"Delete failed for '{identifier}': {e}, project: {active_project.name}"
             )
-            if output_format == "json":
-                return {
+            _raise_delete_failure(
+                output_format,
+                {
                     "deleted": False,
                     "title": None,
                     "permalink": None,
                     "file_path": None,
                     "error": str(e),
-                }
-            return _format_delete_error_response(  # pragma: no cover
-                active_project.name, str(e), identifier
+                },
+                _format_delete_error_response(active_project.name, str(e), identifier),
             )
 
         try:
+            if note_file_path is None:
+                entity_for_path = await knowledge_client.get_entity(entity_id)
+                note_file_path = entity_for_path.file_path
+            snapshot = snapshot_local_note(active_project.home, note_file_path)
+            assert_snapshot_current(active_project.home, snapshot)
+
             # Call the DELETE endpoint
             result = await knowledge_client.delete_entity(entity_id)
+
+            verification = None
+            if ConfigManager().config.verify_writes:
+                verification = await verify_note_delete(
+                    knowledge_client,
+                    external_id=entity_id,
+                    file_path=note_file_path,
+                    project_home=active_project.home,
+                )
 
             if result.deleted:
                 logger.info(
                     f"Successfully deleted note: {identifier} in project: {active_project.name}"
                 )
                 if output_format == "json":
-                    return {
+                    payload: dict[str, Any] = {
                         "deleted": True,
                         "title": note_title,
                         "permalink": note_permalink,
                         "file_path": note_file_path,
                     }
+                    if verification is not None:
+                        payload["verification"] = verification.as_dict()
+                    failure_text = (
+                        f"# Delete failed verification\n\n{verification.as_text()}"
+                        if verification is not None
+                        else ""
+                    )
+                    raise_if_verification_failed(
+                        verification,
+                        output_format=output_format,
+                        payload=payload,
+                        text=failure_text,
+                    )
+                    return payload
+                text_failure = (
+                    f"# Delete failed verification\n\n{verification.as_text()}"
+                    if verification is not None
+                    else ""
+                )
+                raise_if_verification_failed(
+                    verification,
+                    output_format=output_format,
+                    payload={
+                        "deleted": True,
+                        "title": note_title,
+                        "permalink": note_permalink,
+                        "file_path": note_file_path,
+                    },
+                    text=text_failure,
+                )
                 return True
             else:
                 logger.warning(  # pragma: no cover
@@ -487,15 +567,20 @@ delete_note("path/to/file.md")
                     }
                 return False  # pragma: no cover
 
-        except Exception as e:  # pragma: no cover
-            logger.error(f"Delete failed for '{identifier}': {e}, project: {active_project.name}")
-            if output_format == "json":
-                return {
+        except Exception as e:
+            if is_verification_failure(e):
+                raise
+            logger.error(  # pragma: no cover
+                f"Delete failed for '{identifier}': {e}, project: {active_project.name}"
+            )
+            _raise_delete_failure(  # pragma: no cover
+                output_format,
+                {
                     "deleted": False,
                     "title": note_title,
                     "permalink": note_permalink,
                     "file_path": note_file_path,
                     "error": str(e),
-                }
-            # Return formatted error message for better user experience
-            return _format_delete_error_response(active_project.name, str(e), identifier)
+                },
+                _format_delete_error_response(active_project.name, str(e), identifier),
+            )

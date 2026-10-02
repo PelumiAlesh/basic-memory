@@ -26,13 +26,14 @@ search_notes(query=None, project=None, project_id=None,
              entity_types=None, categories=None, after_date=None,
              metadata_filters=None, tags=None, status=None,
              min_similarity=None, valid_at=None, valid_overlaps=None,
-             time_kind=None, compact=False)
+             time_kind=None, compact=False, include_inactive=False)
 ```
 
 CLI:
 
 ```
-bm tool search-notes [QUERY] [--project NAME] [--search-type TYPE]
+bm tool search-notes [QUERY] [--project NAME]
+                     [--title | --permalink | --vector | --hybrid]
                      [--page N] [--page-size N] [--local | --cloud] ...
 ```
 
@@ -92,10 +93,10 @@ It is not a hard token budget: titles and metadata can still be large.
 - **page** (integer, optional, default: 1) — The page number of results to return (default 1). Aliases: page_number.
 - **page_size** (integer, optional, default: 10) — The number of results to return per page (default 10). Aliases: limit, per_page.
 - **search_type** (string | null, optional, default: None) — Type of search to perform, one of: "text", "title", "permalink", "vector", "semantic", "hybrid". Default is dynamic: "hybrid" when semantic search is enabled, otherwise "text".
-- **output_format** (string, optional, default: "text") — "text" preserves existing structured search response behavior. "json" returns a machine-readable dictionary payload.
-- **note_types** (array | null, optional, default: None) — Optional list of note types to search (e.g., ["note", "person"])
-- **entity_types** (array | null, optional, default: None) — Optional list of entity types to filter by (e.g., ["entity", "observation"])
-- **categories** (array | null, optional, default: None) — Optional list of observation categories for exact matching (e.g., ["requirement"]). Pair with entity_types=["observation"] to return only observations whose category matches exactly.
+- **output_format** (string, optional, default: "text") — "text" returns a formatted markdown result list. "json" returns a machine-readable dictionary payload.
+- **note_types** (array | null, optional, default: None) — Filter by the frontmatter `type` field (e.g. "note", "person"). Case-insensitive. Accepts a list, a comma-separated string, or a JSON-array string.
+- **entity_types** (array | null, optional, default: None) — Knowledge-graph item types to return: "entity" (whole notes), "observation", "relation". Defaults to entity, or to observation when categories or a valid-time filter is given. Not the frontmatter `type` (use note_types for that). Accepts a list, a comma-separated string, or a JSON-array string.
+- **categories** (array | null, optional, default: None) — Observation categories to match exactly (e.g. ["requirement"]). Implies observation results unless entity_types is set. Accepts a list, a comma-separated string, or a JSON-array string.
 - **after_date** (string | null, optional, default: None) — Optional date filter for recent content (e.g., "1 week", "2d", "2024-01-01")
 - **metadata_filters** (object | null, optional, default: None) — Optional structured frontmatter filters (e.g., {"status": "in-progress"}). Integer values match integer YAML fields ({"section": 3} works). A None value is an is-null match: notes where the key is absent or explicitly null. None inside $in/$between/a contains list/a comparison is refused — those compare against the value, and a comparison with null is never true.
 - **tags** (array | null, optional, default: None) — Optional tag filter (frontmatter tags); shorthand for metadata_filters["tags"]. Accepts a list (["a", "b"]) or a comma-separated string ("a,b"), matching the write_note tags convention and the tag: query shorthand.
@@ -105,6 +106,7 @@ It is not a hard token budget: titles and metadata can still be large.
 - **valid_overlaps** (string | null, optional, default: None) — Optional PostgreSQL-style range literal ("[2026-06-10,2026-07-27)", "(,2026-07-27]", "[2026-06-10,)"). Returns sources whose authored valid range overlaps it. Mutually exclusive with valid_at; also excludes undated sources. Aliases: overlaps, valid_during.
 - **time_kind** (string | null, optional, default: None) — Optional kind of valid time to narrow to: "effective", "valid", "occurred", "due", or "mentioned". Valid on its own. Alias: kind.
 - **compact** (boolean, optional, default: False) — Omit note bodies and matched excerpts from results. Keep identifiers, metadata, relation targets, scores and pagination for discovery, then read selected notes.
+- **include_inactive** (boolean, optional, default: False) — Include notes whose frontmatter status is superseded or archived. Only matters when the search_exclude_inactive setting is on; exact permalink searches and status filters always include them.
 
 ## MCP USAGE
 

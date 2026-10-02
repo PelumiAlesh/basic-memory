@@ -44,6 +44,12 @@ from basic_memory.schemas import Entity as EntitySchema
 from basic_memory.schemas.base import NoteType, Permalink
 from basic_memory.services.exceptions import EntityAlreadyExistsError
 from basic_memory.services.file_service import FileService
+from basic_memory.shared_memory.provenance import (
+    CREATED_BY_CLIENT_KEY,
+    PROVENANCE_KEYS,
+    keep_first_writer,
+    write_frontmatter_lines,
+)
 from basic_memory.utils import build_canonical_permalink
 from basic_memory.workspace_context import workspace_slug_for_canonical_permalinks
 
@@ -454,6 +460,7 @@ async def prepare_update_entity_content(
     post = await schema_to_markdown(schema)
     merged_metadata = deepcopy(existing_metadata)
     merged_metadata.update(post.metadata)
+    keep_first_writer(existing_metadata, merged_metadata)
     merged_metadata["permalink"] = resolved_permalink
     merged_post = frontmatter.Post(post.content)
     merged_post.metadata.update(merged_metadata)
@@ -719,6 +726,25 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
     sanitized = {k: v for k, v in metadata.items() if k not in _METADATA_IDENTITY_FIELDS}
     if not sanitized:
         return markdown_content
+    # Trigger: the stamp always carries the current app as bm_created_by_client.
+    # Why: that key names the app that first wrote the note. A later edit must not
+    #   take the credit, and a note that never had the key must not gain one.
+    #   created_by/updated_by are a different record and are not touched here.
+    # Outcome: an existing first writer wins; otherwise the key is dropped.
+    if CREATED_BY_CLIENT_KEY in sanitized:
+        if has_frontmatter(markdown_content):
+            keep_first_writer(parse_frontmatter(markdown_content), sanitized)
+        else:
+            sanitized.pop(CREATED_BY_CLIENT_KEY, None)
+        if not sanitized:
+            return markdown_content
+    # Trigger: the merge carries only provenance keys into a note that already has
+    #   frontmatter.
+    # Why: the full merge below re-serializes the YAML, which would reformat the
+    #   user's own values on every stamped edit.
+    # Outcome: only the bm_* lines change.
+    if sanitized.keys() <= PROVENANCE_KEYS and has_frontmatter(markdown_content):
+        return write_frontmatter_lines(markdown_content, sanitized)
     if "type" in sanitized:
         raw_note_type = sanitized["type"]
         if not isinstance(raw_note_type, str):
@@ -726,7 +752,20 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
         # `type` now changes the note's classification, so it must cross the
         # same normalization and length boundary as write_note's note_type.
         sanitized["type"] = _NOTE_TYPE_ADAPTER.validate_python(raw_note_type)
+    return rewrite_frontmatter_fields(markdown_content, updates=sanitized)
 
+
+def rewrite_frontmatter_fields(
+    markdown_content: str,
+    *,
+    updates: dict[str, Any],
+    removals: frozenset[str] = frozenset(),
+) -> str:
+    """Set and remove frontmatter keys while leaving the note body byte-for-byte intact.
+
+    Section offsets are computed against the body, so callers that patch an
+    already-parsed note rely on the body round-tripping unchanged.
+    """
     had_separator = True
     if has_frontmatter(markdown_content):
         current_metadata = parse_frontmatter(markdown_content)
@@ -746,7 +785,9 @@ def _merge_metadata_into_markdown(markdown_content: str, metadata: dict[str, Any
         body = markdown_content
 
     merged_metadata = deepcopy(current_metadata)
-    merged_metadata.update(sanitized)
+    merged_metadata.update(updates)
+    for key in removals:
+        merged_metadata.pop(key, None)
 
     post = frontmatter.Post(body)
     post.metadata.update(merged_metadata)

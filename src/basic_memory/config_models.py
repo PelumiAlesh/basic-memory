@@ -426,6 +426,15 @@ class BasicMemoryConfig(BaseSettings):
         "Valid values: text, vector, hybrid. "
         "When unset, defaults to 'hybrid' if semantic search is enabled, otherwise 'text'.",
     )
+    search_exclude_inactive: bool = Field(
+        default=False,
+        description=(
+            "Leave notes whose frontmatter status is superseded or archived out of "
+            "search_notes and grep results. Exact permalink searches and explicit status "
+            "filters still find them, and include_inactive=true includes them. "
+            "Env: BASIC_MEMORY_SEARCH_EXCLUDE_INACTIVE"
+        ),
+    )
 
     # Reranker configuration (cross-encoder rescoring of the top vector/hybrid candidates)
     reranker_enabled: bool = Field(
@@ -631,6 +640,68 @@ class BasicMemoryConfig(BaseSettings):
         ),
     )
 
+    brief_profile_note: str = Field(
+        default="me/profile",
+        description=(
+            "Permalink or title of the optional profile note included in get_brief when present. "
+            "Env: BASIC_MEMORY_BRIEF_PROFILE_NOTE"
+        ),
+    )
+    brief_include_profile: bool = Field(
+        default=False,
+        description=(
+            "Include the profile note excerpt in get_brief when that note exists. "
+            "Off unless the owner opts in. Env: BASIC_MEMORY_BRIEF_INCLUDE_PROFILE"
+        ),
+    )
+    brief_inject_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, Cursor sessionStart and Claude Code UserPromptSubmit hooks "
+            "may insert the memory brief into the host prompt. Off unless "
+            "`bm setup --brief` is used. Env: BASIC_MEMORY_BRIEF_INJECT_ENABLED"
+        ),
+    )
+    brief_state_note: str = Field(
+        default="project/state",
+        description=(
+            "Permalink or title of the current-state note included in get_brief when present. "
+            "Env: BASIC_MEMORY_BRIEF_STATE_NOTE"
+        ),
+    )
+    brief_inbox_folder: str = Field(
+        default="inbox",
+        description=(
+            "Folder whose top-level markdown files are counted in get_brief. "
+            "Env: BASIC_MEMORY_BRIEF_INBOX_FOLDER"
+        ),
+    )
+    brief_decision_days: int = Field(
+        default=14,
+        ge=1,
+        description=(
+            "How many days of decision notes get_brief lists by title. "
+            "Env: BASIC_MEMORY_BRIEF_DECISION_DAYS"
+        ),
+    )
+    brief_token_budget: int = Field(
+        default=1500,
+        ge=1,
+        description=(
+            "Default token budget for get_brief. Roughly four characters per token. "
+            "Env: BASIC_MEMORY_BRIEF_TOKEN_BUDGET"
+        ),
+    )
+    brief_refresh_hours: float = Field(
+        default=6.0,
+        gt=0,
+        description=(
+            "Minimum hours between brief deliveries for the same conversation, for "
+            "get_brief, bm brief, and prompt-submit hooks. "
+            "Env: BASIC_MEMORY_BRIEF_REFRESH_HOURS"
+        ),
+    )
+
     ensure_frontmatter_on_sync: bool = Field(
         default=True,
         description="Ensure markdown files have complete frontmatter during sync by adding derived title and type when missing. Canonical permalinks are always added.",
@@ -733,6 +804,95 @@ class BasicMemoryConfig(BaseSettings):
         description="Default cloud workspace tenant_id. Set by 'bm cloud workspace set-default'.",
     )
 
+    # --- Shared memory fork ---
+    # Settings for the PelumiAlesh fork's shared-memory features (docs/SHARED_MEMORY.md).
+
+    record_provenance: bool = Field(
+        default=True,
+        description=(
+            "On MCP write_note and edit_note, record bm_source_client, bm_updated, and "
+            "bm_created_by_client in frontmatter when the app names itself (MCP clientInfo). "
+            "Writes from apps that send no clientInfo are unchanged. "
+            "Env: BASIC_MEMORY_RECORD_PROVENANCE"
+        ),
+    )
+
+    verify_writes: bool = Field(
+        default=True,
+        description=(
+            "After MCP write_note, edit_note, move_note, and delete_note, read the "
+            "accepted note back from the index and from disk when the project is local. "
+            "Env: BASIC_MEMORY_VERIFY_WRITES"
+        ),
+    )
+
+    mcp_http_host: str = Field(
+        default="127.0.0.1",
+        description=(
+            "Address the MCP HTTP and SSE transports bind to when --host is omitted. "
+            "A wider bind still needs a bearer token and an allowed Host header. "
+            "Env: BASIC_MEMORY_MCP_HTTP_HOST"
+        ),
+    )
+
+    mcp_http_token: Optional[str] = Field(
+        default=None,
+        description=(
+            "Shared bearer token for the MCP HTTP and SSE transports. Without it or "
+            "mcp_http_client_tokens those transports refuse to start. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_TOKEN"
+        ),
+    )
+
+    mcp_http_client_tokens: Dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Per-app bearer tokens as a {client: token} map. Writes made with one are "
+            "attributed to that client, whatever clientInfo says. Never logged. "
+            "Env: BASIC_MEMORY_MCP_HTTP_CLIENT_TOKENS (JSON object)"
+        ),
+    )
+
+    mcp_http_allowed_hosts: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Host header values the MCP HTTP transports accept besides loopback and the "
+            "bound address. Other hosts get 421. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_HOSTS (JSON list)"
+        ),
+    )
+
+    mcp_http_allowed_origins: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Browser Origin values the MCP HTTP transports accept besides same-origin "
+            "and loopback. Other origins get 403. "
+            "Env: BASIC_MEMORY_MCP_HTTP_ALLOWED_ORIGINS (JSON list)"
+        ),
+    )
+
+    usage_log_enabled: bool = Field(
+        default=True,
+        description=(
+            "Append local usage/debug events under each project's .bm-logs/ directory. "
+            "Local only; disabled in cloud deployments. Env: BASIC_MEMORY_USAGE_LOG_ENABLED"
+        ),
+    )
+
+    usage_log_retention_days: int = Field(
+        default=90,
+        description="Delete events-*.jsonl older than this many days. Env: BASIC_MEMORY_USAGE_LOG_RETENTION_DAYS",
+        gt=0,
+    )
+
+    session_capture_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, fork setup hooks write a local inbox note for a stopped "
+            "conversation. Off by default. Env: BASIC_MEMORY_SESSION_CAPTURE_ENABLED"
+        ),
+    )
+
     # Legacy config keys / env vars mapped to their renamed fields.
     _LEGACY_SYNC_FIELDS: ClassVar[dict[str, str]] = {
         "index_changes": "sync_changes",
@@ -825,6 +985,23 @@ class BasicMemoryConfig(BaseSettings):
         """
         return self.skip_initialization_sync or self.cloud_mode
 
+    def project_entry(self, project_name: str) -> Optional["ProjectEntry"]:
+        """Return the config entry for a project, matched by name or by permalink.
+
+        Startup reconciliation rewrites config keys to permalinks while the
+        database keeps the display name, so `My Research` is stored under
+        `my-research`. Every lookup by a project's name goes through here so
+        the two spellings cannot disagree (#1624).
+        """
+        entry = self.projects.get(project_name)
+        if entry is not None:
+            return entry
+        project_permalink = generate_permalink(project_name)
+        for configured_name, configured_entry in self.projects.items():
+            if generate_permalink(configured_name) == project_permalink:
+                return configured_entry
+        return None
+
     def get_project_mode(self, project_name: str) -> ProjectMode:
         """Get the routing mode for a project.
 
@@ -832,7 +1009,7 @@ class BasicMemoryConfig(BaseSettings):
         Unknown projects (not in local config) default to CLOUD —
         local projects are always registered in config.
         """
-        entry = self.projects.get(project_name)
+        entry = self.project_entry(project_name)
         return entry.mode if entry else ProjectMode.CLOUD
 
     def is_locally_syncable(self, project_name: str, project_path: str) -> bool:
@@ -852,7 +1029,7 @@ class BasicMemoryConfig(BaseSettings):
         local bisync copy (absolute path) are handled correctly by these two
         conditions, so no separate mode check is needed.
         """
-        entry = self.projects.get(project_name)
+        entry = self.project_entry(project_name)
         return entry is not None and Path(project_path).is_absolute()
 
     def set_project_mode(self, project_name: str, mode: ProjectMode) -> None:

@@ -7,6 +7,7 @@ Tests mock the MCP tool functions directly.
 import json
 from unittest.mock import AsyncMock, patch
 
+from fastmcp.exceptions import ToolError
 from typer.testing import CliRunner
 
 from basic_memory.cli.main import app as cli_app
@@ -158,6 +159,64 @@ def test_write_note_project_id_passthrough(mock_mcp_write):
 
     assert result.exit_code == 0, f"CLI failed: {result.output}"
     assert mock_mcp_write.call_args.kwargs["project_id"] == uuid
+
+
+@patch(
+    "basic_memory.mcp.tools.write_note",
+    new_callable=AsyncMock,
+    return_value=WRITE_NOTE_RESULT,
+)
+def test_write_note_expected_checksum_passthrough(mock_mcp_write):
+    """--expected-checksum conditions the MCP overwrite on the revision the caller read."""
+    checksum = "a" * 64
+    result = runner.invoke(
+        cli_app,
+        [
+            "tool",
+            "write-note",
+            "--title",
+            "Test Note",
+            "--folder",
+            "notes",
+            "--content",
+            "hello",
+            "--overwrite",
+            "--expected-checksum",
+            checksum,
+        ],
+    )
+
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert mock_mcp_write.call_args.kwargs["overwrite"] is True
+    assert mock_mcp_write.call_args.kwargs["expected_checksum"] == checksum
+
+
+@patch(
+    "basic_memory.mcp.tools.write_note",
+    new_callable=AsyncMock,
+    return_value={"action": "conflict", "error": "NOTE_REVISION_CONFLICT", "checksum": "b" * 64},
+)
+def test_write_note_revision_conflict_exits_nonzero(mock_mcp_write):
+    """A stale --expected-checksum is a failed write for exit-code-driven scripts."""
+    result = runner.invoke(
+        cli_app,
+        [
+            "tool",
+            "write-note",
+            "--title",
+            "Test Note",
+            "--folder",
+            "notes",
+            "--content",
+            "hello",
+            "--overwrite",
+            "--expected-checksum",
+            "a" * 64,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "NOTE_REVISION_CONFLICT" in result.output
 
 
 @patch(
@@ -395,6 +454,37 @@ def test_delete_note_directory_partial_failure_exits_nonzero(
     assert result.exit_code == 1
     assert "Error: Directory delete incomplete: 1 file(s) failed" in result.output
     assert mock_mcp_delete.call_args.kwargs["output_format"] == "json"
+
+
+@patch(
+    "basic_memory.mcp.tools.delete_note",
+    new_callable=AsyncMock,
+    side_effect=ToolError(
+        json.dumps(
+            {
+                "deleted": False,
+                "is_directory": True,
+                "identifier": "notes/archive",
+                "total_files": 3,
+                "successful_deletes": 2,
+                "failed_deletes": 1,
+                "error": "Directory delete incomplete: 1 of 3 file(s) failed",
+            }
+        )
+    ),
+)
+def test_delete_note_reports_a_tool_error_payload_and_exits_nonzero(
+    mock_mcp_delete: AsyncMock,
+) -> None:
+    """A failed delete raised as a tool error prints its error field, not raw JSON."""
+    result = runner.invoke(
+        cli_app,
+        ["tool", "delete-note", "notes/archive", "--is-directory"],
+    )
+
+    assert result.exit_code == 1
+    assert "Error: Directory delete incomplete: 1 of 3 file(s) failed" in result.output
+    assert '"deleted"' not in result.output
 
 
 @patch(

@@ -19,6 +19,7 @@ from basic_memory.services.search_service import SearchService
 from basic_memory.utils import (
     build_permalink_resolution_candidates,
     generate_permalink,
+    own_project_remainder,
     normalize_project_reference,
 )
 from basic_memory.workspace_context import current_workspace_permalink_context
@@ -154,18 +155,79 @@ class LinkResolver:
             except ValueError:
                 pass
 
-            project_permalink = await self._get_current_project_permalink(active_session)
-            return await self._resolve_in_project(
+            return await self._resolve_in_current_project(
                 session=active_session,
-                entity_repository=self.entity_repository,
-                search_service=self.search_service,
                 link_text=clean_text,
                 use_search=True,
+                strict=strict,
+                source_path=source_path,
+                load_relations=load_relations,
+            )
+
+    async def _resolve_in_current_project(
+        self,
+        *,
+        session: AsyncSession,
+        link_text: str,
+        use_search: bool,
+        strict: bool,
+        source_path: Optional[str],
+        load_relations: bool,
+    ) -> Optional[Entity]:
+        """Resolve in this resolver's project: exact spellings first, fuzzy search last.
+
+        Shared by resolve_link and resolve_entity so entity reads and link
+        resolution accept the same routed identifiers.
+        """
+        project_permalink = await self._get_current_project_permalink(session)
+        resolved = await self._resolve_in_project(
+            session=session,
+            entity_repository=self.entity_repository,
+            search_service=self.search_service,
+            link_text=link_text,
+            use_search=False,
+            strict=strict,
+            source_path=source_path,
+            project_permalink=project_permalink,
+            load_relations=load_relations,
+        )
+        if resolved:
+            return resolved
+
+        # Trigger: the identifier starts with this project's own routing prefix, as a
+        #   routed memory:// URL does (`main/Cache Layer Design`, `main/assets/a.pdf`).
+        # Why: permalink candidates strip that prefix, but the title and file-path
+        #   lookups saw the prefixed text and could never match, so a title URL
+        #   resolved only through fuzzy search and often landed on a neighbour that
+        #   links to it (#1626), and a routed resource path (permalink NULL) missed.
+        # Outcome: the exact lookups run on the remainder before any fuzzy match.
+        own_remainder = self._own_project_remainder(link_text, project_permalink)
+        if own_remainder:
+            resolved = await self._resolve_in_project(
+                session=session,
+                entity_repository=self.entity_repository,
+                search_service=self.search_service,
+                link_text=own_remainder,
+                use_search=False,
                 strict=strict,
                 source_path=source_path,
                 project_permalink=project_permalink,
                 load_relations=load_relations,
             )
+            if resolved:
+                return resolved
+
+        # Fuzzy matching is the last resort, after every exact spelling has missed.
+        # Strict resolution never guesses.
+        if use_search and not strict:
+            return await self._search_best_match(
+                session=session,
+                entity_repository=self.entity_repository,
+                search_service=self.search_service,
+                link_text=link_text,
+                load_relations=load_relations,
+            )
+        return None
 
     async def resolve_link(
         self,
@@ -242,16 +304,12 @@ class LinkResolver:
                     load_relations=load_relations,
                 )
 
-            current_project_permalink = await self._get_current_project_permalink(active_session)
-            resolved = await self._resolve_in_project(
+            resolved = await self._resolve_in_current_project(
                 session=active_session,
-                entity_repository=self.entity_repository,
-                search_service=self.search_service,
                 link_text=clean_text,
                 use_search=use_search,
                 strict=strict,
                 source_path=source_path,
-                project_permalink=current_project_permalink,
                 load_relations=load_relations,
             )
             if resolved:
@@ -563,29 +621,48 @@ class LinkResolver:
             return None
 
         # 6. Fall back to search for fuzzy matching (only if not in strict mode)
-        if use_search and "*" not in clean_text:
-            results = await search_service.search(
-                query=SearchQuery(text=clean_text, entity_types=[SearchItemType.ENTITY]),
+        if use_search:
+            return await self._search_best_match(
                 session=session,
+                entity_repository=entity_repository,
+                search_service=search_service,
+                link_text=clean_text,
+                load_relations=load_relations,
             )
-
-            if results:
-                # Both SQLite and Postgres return results sorted best-first in SQL
-                # (SQLite: ORDER BY score ASC for negative BM25, Postgres: ORDER BY score DESC
-                # for positive ts_rank). Using results[0] is backend-agnostic and correct.
-                best_match = results[0]
-                logger.trace(
-                    f"Selected best match from {len(results)} results: {best_match.permalink}"
-                )
-                if best_match.permalink:
-                    return await entity_repository.get_by_permalink(
-                        session,
-                        best_match.permalink,
-                        load_relations=load_relations,
-                    )
 
         # if we couldn't find anything then return None
         return None
+
+    async def _search_best_match(
+        self,
+        *,
+        session: AsyncSession,
+        entity_repository: EntityRepository,
+        search_service: SearchService,
+        link_text: str,
+        load_relations: bool,
+    ) -> Optional[Entity]:
+        """Return the top full-text hit for link text, the resolver's fuzzy last resort."""
+        if "*" in link_text:
+            return None
+        results = await search_service.search(
+            query=SearchQuery(text=link_text, entity_types=[SearchItemType.ENTITY]),
+            session=session,
+        )
+        if not results:
+            return None
+        # Both SQLite and Postgres return results sorted best-first in SQL
+        # (SQLite: ORDER BY score ASC for negative BM25, Postgres: ORDER BY score DESC
+        # for positive ts_rank). Using results[0] is backend-agnostic and correct.
+        best_match = results[0]
+        logger.trace(f"Selected best match from {len(results)} results: {best_match.permalink}")
+        if not best_match.permalink:
+            return None
+        return await entity_repository.get_by_permalink(
+            session,
+            best_match.permalink,
+            load_relations=load_relations,
+        )
 
     def _include_project_permalinks(self) -> bool:
         """Return True when permalinks should include the project slug."""
@@ -656,6 +733,21 @@ class LinkResolver:
             self._search_service_cache[project.id] = search_service
 
         return project, entity_repository, search_service
+
+    def _own_project_remainder(
+        self, identifier: str, project_permalink: Optional[str]
+    ) -> Optional[str]:
+        """Return the identifier without this project's routing prefix, if it has one."""
+        workspace_context = current_workspace_permalink_context()
+        return own_project_remainder(
+            identifier,
+            project_permalink,
+            workspace_permalink=(
+                workspace_context.workspace_slug
+                if workspace_context and workspace_context.should_prefix_permalinks
+                else None
+            ),
+        )
 
     def _split_project_prefix(self, identifier: str) -> Tuple[Optional[str], str]:
         """Split project prefix from a path-like identifier."""

@@ -59,20 +59,22 @@ class TestTrack:
             track("test-event")
             mock_thread.assert_not_called()
 
-    def test_sends_when_using_defaults(self, monkeypatch):
+    def test_sends_when_using_defaults(self, monkeypatch, tmp_path):
         """With baked-in defaults, track() fires even without env vars."""
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_HOST", raising=False)
         monkeypatch.delenv("BASIC_MEMORY_UMAMI_SITE_ID", raising=False)
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
         with patch("basic_memory.cli.analytics.threading.Thread") as mock_thread:
             mock_thread.return_value = MagicMock()
             track("test-event")
             mock_thread.assert_called_once()
 
-    def test_sends_event_when_configured(self, monkeypatch):
+    def test_sends_event_when_configured(self, monkeypatch, tmp_path):
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "https://analytics.example.com")
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "test-site-id")
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
 
         captured_target = None
 
@@ -87,10 +89,11 @@ class TestTrack:
 
         assert captured_target is not None
 
-    def test_send_hits_correct_url(self, monkeypatch):
+    def test_send_hits_correct_url(self, monkeypatch, tmp_path):
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "https://analytics.example.com")
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "test-site-id")
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
 
         captured_request = None
 
@@ -119,10 +122,11 @@ class TestTrack:
         assert body["payload"]["hostname"] == "cli.basicmemory.com"
         assert "version" in body["payload"]["data"]
 
-    def test_send_failure_is_silent(self, monkeypatch):
+    def test_send_failure_is_silent(self, monkeypatch, tmp_path):
         monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_HOST", "https://analytics.example.com")
         monkeypatch.setenv("BASIC_MEMORY_UMAMI_SITE_ID", "test-site-id")
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
 
         def fake_urlopen(req, timeout=None):
             raise ConnectionError("Network down")
@@ -137,6 +141,55 @@ class TestTrack:
                 mock_thread.side_effect = run_target
                 # Should not raise
                 track("test-event")
+
+    def test_no_op_when_cloud_promo_opt_out(self, monkeypatch, tmp_path):
+        from basic_memory import config as config_module
+        from basic_memory.config import ConfigManager
+
+        monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
+        config_module._CONFIG_CACHE = None
+        manager = ConfigManager()
+        config = manager.load_config()
+        config.cloud_promo_opt_out = True
+        manager.save_config(config)
+        config_module._CONFIG_CACHE = None
+
+        with patch("basic_memory.cli.analytics.threading.Thread") as mock_thread:
+            track("test-event")
+            mock_thread.assert_not_called()
+
+    def test_no_op_when_fork_setup_manifest_exists(self, monkeypatch, tmp_path):
+        from basic_memory import config as config_module
+        from basic_memory.config import ConfigManager
+        from basic_memory.setup.manifest import SetupManifest, save_manifest
+
+        monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
+        config_module._CONFIG_CACHE = None
+        manager = ConfigManager()
+        config = manager.load_config()
+        config.cloud_promo_opt_out = False
+        manager.save_config(config)
+        save_manifest(tmp_path, SetupManifest.empty("com.pelumi.basic-memory-mcp"))
+        config_module._CONFIG_CACHE = None
+
+        with patch("basic_memory.cli.analytics.threading.Thread") as mock_thread:
+            track("test-event")
+            mock_thread.assert_not_called()
+
+    def test_unreadable_config_does_not_send(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("BASIC_MEMORY_NO_PROMOS", raising=False)
+        monkeypatch.setenv("BASIC_MEMORY_CONFIG_DIR", str(tmp_path))
+
+        class UnreadableConfig:
+            def __init__(self) -> None:
+                raise OSError("config unreadable")
+
+        monkeypatch.setattr("basic_memory.config.ConfigManager", UnreadableConfig)
+        with patch("basic_memory.cli.analytics.threading.Thread") as mock_thread:
+            track("test-event")
+            mock_thread.assert_not_called()
 
 
 class TestEventConstants:

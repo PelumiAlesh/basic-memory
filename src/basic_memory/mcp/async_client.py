@@ -276,7 +276,7 @@ def resolve_configured_workspace(
         config = ConfigManager().config
 
     if project_name is not None:
-        project_entry = config.projects.get(project_name)
+        project_entry = config.project_entry(project_name)
         if project_entry and project_entry.workspace_id:
             return project_entry.workspace_id
 
@@ -411,6 +411,19 @@ async def get_client(
     # Outcome: route via project.mode (CLOUD/LOCAL).
     if project_name is not None and not _explicit_routing():
         project_mode = config.get_project_mode(project_name)
+        # Trigger: a name local config does not know, with no cloud credentials and
+        #   no workspace selector.
+        # Why: an unknown name defaults to cloud mode, which can only fail here
+        #   with a credentials error that hides the real problem (#1632). A caller
+        #   that names a workspace asked for cloud explicitly, so it must still fail
+        #   as a cloud request rather than read a same-named local project.
+        # Outcome: the local API answers with its "project not found" error.
+        if (
+            workspace is None
+            and config.project_entry(project_name) is None
+            and not has_cloud_credentials(config)
+        ):
+            project_mode = ProjectMode.LOCAL
         if project_mode == ProjectMode.CLOUD:
             logger.debug(f"Project '{project_name}' is cloud mode - using cloud proxy client")
             effective_workspace = resolve_configured_workspace(
@@ -445,7 +458,7 @@ async def get_client(
             raise RuntimeError(
                 f"A cloud workspace was requested ('{workspace}') but no cloud "
                 "credentials were found. Run 'bm cloud login' or "
-                "'bm cloud set-key <key>' first, or omit the workspace selector "
+                "'bm cloud api-key save <key>' first, or omit the workspace selector "
                 "for a local operation."
             )
         logger.debug(f"Workspace selector '{workspace}' provided - using cloud proxy client")

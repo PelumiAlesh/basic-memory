@@ -78,6 +78,7 @@ class SearchQuery(BaseModel):
     - file_path_prefix: Limit to one directory subtree of the project
     - tags: Convenience frontmatter tag filter
     - status: Convenience frontmatter status filter
+    - exclude_statuses: Leave out notes whose frontmatter status is one of these
     - valid_at / valid_overlaps / time_kind: Authored valid-time filters (SPEC-82)
 
     Valid time is what a note *says about the world*, written as a qualifier on an
@@ -110,6 +111,9 @@ class SearchQuery(BaseModel):
     file_path_prefix: Optional[str] = None
     tags: Optional[List[str]] = None  # Convenience tag filter
     status: Optional[str] = None  # Convenience status filter
+    # Narrows a search without being one: a query carrying only exclusions has no
+    # criteria. A note without a status is never excluded.
+    exclude_statuses: Optional[List[str]] = None
     retrieval_mode: SearchRetrievalMode = SearchRetrievalMode.FTS
     min_similarity: Optional[float] = None  # Per-query override for semantic_min_similarity
 
@@ -173,6 +177,19 @@ class SearchQuery(BaseModel):
         value instead of each rediscovering that "/" is not a subtree.
         """
         return normalize_file_path_prefix(value)
+
+    @field_validator("exclude_statuses")
+    @classmethod
+    def normalize_excluded_statuses(cls, values: Optional[List[str]]) -> Optional[List[str]]:
+        """Fold statuses to lowercase so `Superseded` and `superseded` both drop out.
+
+        An empty list is no exclusion at all, and collapses to None so the SQL for an
+        unfiltered search stays exactly what it was.
+        """
+        if values is None:
+            return None
+        statuses = dict.fromkeys(value.strip().lower() for value in values if value.strip())
+        return list(statuses) or None
 
     def has_temporal_filter(self) -> bool:
         """Whether this query asks a valid-time question at all.

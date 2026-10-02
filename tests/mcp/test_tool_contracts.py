@@ -1,4 +1,10 @@
-"""Tool contract tests for MCP tool signatures."""
+"""Tool contract tests for MCP tool signatures.
+
+The v2 fork stack tracks upstream tool names on the write-safety base branch.
+Brief and review-inbox tools from legacy PR #15 are intentionally out of scope
+here; do not add ``get_brief``, ``review_queue``, or ``review_note`` to the
+expected maps until those features land on their own branches.
+"""
 
 from __future__ import annotations
 
@@ -71,6 +77,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "project",
         "project_id",
     ],
+    "get_brief": ["project", "project_id", "token_budget", "conversation_id"],
     "grep": [
         "pattern",
         "literal",
@@ -80,6 +87,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "project_id",
         "context_lines",
         "max_matches",
+        "include_inactive",
     ],
     "list_directory": [
         "dir_name",
@@ -153,6 +161,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "valid_overlaps",
         "time_kind",
         "compact",
+        "include_inactive",
     ],
     "tail": ["timeframe", "lines", "project", "project_id"],
     "view_note": ["identifier", "project", "project_id"],
@@ -167,6 +176,7 @@ EXPECTED_TOOL_SIGNATURES: dict[str, list[str]] = {
         "note_type",
         "metadata",
         "overwrite",
+        "expected_checksum",
         "output_format",
     ],
 }
@@ -179,6 +189,7 @@ EXPECTED_TOOL_ANNOTATIONS: dict[str, dict[str, bool]] = {
     "basic_memory_diagnostics": {"readOnlyHint": True, "destructiveHint": False},
     "build_context": {"readOnlyHint": True, "destructiveHint": False},
     "fetch": {"readOnlyHint": True, "destructiveHint": False},
+    "get_brief": {"readOnlyHint": True, "destructiveHint": False},
     "list_directory": {"readOnlyHint": True, "destructiveHint": False},
     "list_memory_projects": {"readOnlyHint": True, "destructiveHint": False},
     "list_workspaces": {"readOnlyHint": True, "destructiveHint": False},
@@ -242,6 +253,7 @@ TOOL_FUNCTIONS: dict[str, object] = {
     "delete_project": tools.delete_project,
     "edit_note": tools.edit_note,
     "fetch": tools.fetch,
+    "get_brief": tools.get_brief,
     "find": tools.find,
     "grep": tools.grep,
     "list_directory": tools.list_directory,
